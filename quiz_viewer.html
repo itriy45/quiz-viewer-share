@@ -916,6 +916,7 @@ function restoreProgressOrDefault() {
   orderMode = validModes.includes(saved.orderMode) ? saved.orderMode : 'sequential';
   answerState = saved.answerState && typeof saved.answerState === 'object' ? saved.answerState : {};
   sectionNav  = saved.sectionNav  && typeof saved.sectionNav  === 'object' ? saved.sectionNav  : {};
+  buildSidebar(); // rebuild now that answerState is loaded so progress bars show correctly
   sessionStats = saved.sessionStats && typeof saved.sessionStats === 'object'
     ? {
         correct: saved.sessionStats.correct || 0,
