@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Added distraction-free test view by hiding non-test menus during quiz interaction, while keeping one-question training flow and persistence. -->
+<!-- Updated: Reduced quiz header footprint and moved Next action into the test card for faster one-question navigation, while preserving focus mode and persistence. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -53,17 +53,17 @@
   #progress-info { font-size: 12px; color: #888; }
 
   /* Progress bar */
-  #progress-wrap { height: 3px; background: #eee; border-radius: 2px; margin-bottom: 1.5rem; }
+  #progress-wrap { height: 2px; background: #eee; border-radius: 2px; margin-bottom: 0.55rem; }
   #progress-bar { height: 100%; background: #2563eb; border-radius: 2px; transition: width 0.3s; }
 
   /* Score summary */
   #score-bar {
     display: flex; gap: 1rem; margin-bottom: 1.5rem;
-    padding: 0.75rem 1rem; background: #fff; border-radius: 10px;
-    border: 1px solid #e5e5e5; font-size: 13px;
+    padding: 0.42rem 0.65rem; background: #fff; border-radius: 8px;
+    border: 1px solid #e5e5e5; font-size: 12px;
   }
   .score-item { display: flex; align-items: center; gap: 6px; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; }
   .dot-green { background: #16a34a; }
   .dot-yellow { background: #d97706; }
   .dot-red { background: #dc2626; }
@@ -149,6 +149,7 @@
   /* Shuffle mode: one at a time */
   #single-view { display: none; }
   .big-q { font-size: 16px; font-weight: 500; line-height: 1.6; margin-bottom: 1.25rem; }
+  #page-info { font-size: 12px; color: #888; }
 
   /* Focus mode: hide non-test controls during interaction */
   body.focus-test #sidebar,
@@ -267,6 +268,7 @@
       <div class="btn-row">
         <button class="check" id="s-check-btn" onclick="checkCurrent()">Перевірити</button>
         <button class="next" id="s-skip-btn" onclick="skipCurrent()">Пропустити</button>
+        <button class="next" id="s-next-inline-btn" onclick="goToQuestion(1)" style="display:none">Наступне →</button>
       </div>
       <div id="s-result"></div>
     </div>
@@ -280,8 +282,7 @@
 
   <div id="nav-row">
     <button class="nav-btn" id="btn-prev" onclick="goToQuestion(-1)">← Попереднє</button>
-    <span id="page-info" style="font-size:13px;color:#888"></span>
-    <button class="nav-btn" id="btn-next" onclick="goToQuestion(1)">Наступне →</button>
+    <span id="page-info"></span>
   </div>
 </div>
 
@@ -464,8 +465,10 @@ function renderCurrentQuestion() {
 
   const checkBtn = document.getElementById('s-check-btn');
   const skipBtn = document.getElementById('s-skip-btn');
+  const inlineNextBtn = document.getElementById('s-next-inline-btn');
   checkBtn.disabled = false;
   skipBtn.disabled = false;
+  inlineNextBtn.style.display = 'none';
   checkBtn.textContent = 'Перевірити';
 
   if (saved && saved.graded) {
@@ -771,7 +774,7 @@ function calculateStats() {
 }
 
 function updateNextButtonVisibility() {
-  const btnNext = document.getElementById('btn-next');
+  const btnNext = document.getElementById('s-next-inline-btn');
   const total = currentSection.questions.length;
   const q = currentSection.questions[questionOrder[currentIndex]];
   const st = q ? answerState[getQuestionKey(q)] : null;
