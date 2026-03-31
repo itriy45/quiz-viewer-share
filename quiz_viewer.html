@@ -258,12 +258,6 @@
     <span id="progress-info" style="margin-left:auto"></span>
   </div>
 
-  <div id="nav-row">
-    <button class="nav-btn" id="btn-prev" onclick="goToQuestion(-1)">← Попереднє</button>
-    <span id="page-info" style="font-size:13px;color:#888"></span>
-    <button class="nav-btn" id="btn-next" onclick="goToQuestion(1)">Наступне →</button>
-  </div>
-
   <div id="single-view">
     <div class="q-card" id="single-card">
       <div class="q-meta" id="s-meta"></div>
@@ -282,6 +276,12 @@
       <p id="final-detail"></p>
       <button class="restart" onclick="restartShuffle()">Почати знову</button>
     </div>
+  </div>
+
+  <div id="nav-row">
+    <button class="nav-btn" id="btn-prev" onclick="goToQuestion(-1)">← Попереднє</button>
+    <span id="page-info" style="font-size:13px;color:#888"></span>
+    <button class="nav-btn" id="btn-next" onclick="goToQuestion(1)">Наступне →</button>
   </div>
 </div>
 
@@ -432,6 +432,7 @@ function renderCurrentQuestion() {
   const saved = answerState[key] || null;
 
   document.getElementById('single-view').style.display = 'block';
+  document.getElementById('nav-row').style.display = 'flex';
   document.getElementById('score-bar').style.display = 'flex';
   document.getElementById('single-card').style.display = 'block';
   document.getElementById('final').style.display = 'none';
@@ -450,24 +451,27 @@ function renderCurrentQuestion() {
     row.innerHTML = `<input type="${inputType}" name="sq" id="${id}" value="${oi}">
                      <label for="${id}">${escHtml(opt.text)}</label>`;
     row.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') row.querySelector('input').click(); });
+    row.querySelector('input').addEventListener('change', () => {
+      evaluateCurrentAnswer(false);
+    });
     wrap.appendChild(row);
   });
 
   wrap.dataset.q = JSON.stringify(q);
   document.getElementById('page-info').textContent = `${currentIndex + 1} з ${total}`;
   document.getElementById('btn-prev').disabled = currentIndex === 0;
-  document.getElementById('btn-next').disabled = false;
-  document.getElementById('btn-next').textContent = currentIndex >= total - 1 ? 'Завершити' : 'Наступне →';
+  updateNextButtonVisibility();
 
   const checkBtn = document.getElementById('s-check-btn');
   const skipBtn = document.getElementById('s-skip-btn');
   checkBtn.disabled = false;
   skipBtn.disabled = false;
+  checkBtn.textContent = 'Перевірити';
 
   if (saved && saved.graded) {
     applySavedAnswerState(wrap, q);
-    checkBtn.disabled = true;
-    skipBtn.disabled = true;
+    checkBtn.textContent = 'Перевірити ще раз';
+    updateNextButtonVisibility();
   }
 
   updateScoreBar();
@@ -477,16 +481,27 @@ function renderCurrentQuestion() {
 }
 
 function checkCurrent() {
+  evaluateCurrentAnswer(true);
+}
+
+function evaluateCurrentAnswer(showPickHint) {
   const wrap = document.getElementById('s-options');
   const q = JSON.parse(wrap.dataset.q);
   const inputs = wrap.querySelectorAll('input');
   const picked = Array.from(inputs).some(inp => inp.checked);
   if (!picked) {
-    document.getElementById('s-result').innerHTML = '<div class="q-result zero" style="margin-top:0.75rem">Оберіть хоча б один варіант або натисніть "Пропустити".</div>';
+    if (showPickHint) {
+      document.getElementById('s-result').innerHTML = '<div class="q-result zero" style="margin-top:0.75rem">Оберіть хоча б один варіант або натисніть "Пропустити".</div>';
+    }
     return;
   }
-  const already = answerState[getQuestionKey(q)];
-  if (already && already.graded) return;
+
+  // Clear previous visual state before re-checking.
+  wrap.querySelectorAll('.option').forEach(row => {
+    row.classList.remove('res-correct', 'res-partial', 'res-wrong', 'res-missed');
+    const lbl = row.querySelector('label');
+    lbl.classList.remove('lbl-correct', 'lbl-partial', 'lbl-wrong');
+  });
 
   let earned = 0;
   let maxPossible = q.options.reduce((s, o) => s + Math.max(0, o.weight), 0) || 100;
@@ -495,29 +510,26 @@ function checkCurrent() {
     const opt = q.options[i];
     const row = inp.closest('.option');
     const lbl = row.querySelector('label');
-    inp.disabled = true;
+
     if (inp.checked) {
       earned += opt.weight;
       if (opt.weight === 100) { row.classList.add('res-correct'); lbl.classList.add('lbl-correct'); }
       else if (opt.weight > 0) { row.classList.add('res-partial'); lbl.classList.add('lbl-partial'); }
       else { row.classList.add('res-wrong'); lbl.classList.add('lbl-wrong'); }
-    } else {
-      if (opt.weight === 100) row.classList.add('res-missed');
+    } else if (opt.weight === 100) {
+      row.classList.add('res-missed');
     }
   });
 
   const pct = maxPossible > 0 ? Math.round((earned / maxPossible) * 100) : 0;
-  if (pct >= 100) sessionStats.correct++;
-  else if (pct > 0) sessionStats.partial++;
-  else sessionStats.wrong++;
-
   const cls = pct >= 100 ? 'full' : pct > 0 ? 'partial' : 'zero';
   const label = pct >= 100 ? '✓ Правильно!' : pct > 0 ? `~ Частково правильно (${pct}%)` : '✗ Неправильно';
   document.getElementById('s-result').innerHTML = `<div class="q-result ${cls}" style="margin-top:0.75rem">${label}</div>`;
-  document.getElementById('s-check-btn').disabled = true;
-  document.getElementById('s-skip-btn').disabled = true;
+
   const selected = Array.from(inputs).map((inp, idx) => inp.checked ? idx : null).filter(v => v !== null);
   answerState[getQuestionKey(q)] = { selected, pct, graded: true, skipped: false };
+  document.getElementById('s-check-btn').textContent = 'Перевірити ще раз';
+  updateNextButtonVisibility();
   updateScoreBar();
   saveProgress();
 }
@@ -527,6 +539,9 @@ function skipCurrent() {
   const existing = answerState[getQuestionKey(q)];
   if (!existing || !existing.graded) {
     answerState[getQuestionKey(q)] = { selected: [], pct: 0, graded: true, skipped: true };
+    document.getElementById('s-result').innerHTML = '<div class="q-result partial" style="margin-top:0.75rem">Пропущено</div>';
+  } else {
+    document.getElementById('s-result').innerHTML = '<div class="q-result partial" style="margin-top:0.75rem">Відповідь вже вибрано — перехід далі.</div>';
   }
   updateScoreBar();
   saveProgress();
@@ -561,6 +576,7 @@ function restartShuffle() {
 function showFinal() {
   document.getElementById('single-card').style.display = 'none';
   document.getElementById('final').style.display = 'block';
+  document.getElementById('nav-row').style.display = 'none';
   const total = currentSection.questions.length;
   const stats = calculateStats();
   sessionStats = stats;
@@ -598,7 +614,6 @@ function applySavedAnswerState(card, q) {
     const row = inp.closest('.option');
     const lbl = row.querySelector('label');
     inp.checked = st.selected.includes(i);
-    inp.disabled = true;
     if (inp.checked) {
       if (opt.weight === 100) { row.classList.add('res-correct'); lbl.classList.add('lbl-correct'); }
       else if (opt.weight > 0) { row.classList.add('res-partial'); lbl.classList.add('lbl-partial'); }
@@ -753,6 +768,16 @@ function calculateStats() {
     else stats.wrong++;
   });
   return stats;
+}
+
+function updateNextButtonVisibility() {
+  const btnNext = document.getElementById('btn-next');
+  const total = currentSection.questions.length;
+  const q = currentSection.questions[questionOrder[currentIndex]];
+  const st = q ? answerState[getQuestionKey(q)] : null;
+  const isCorrect = Boolean(st && st.graded && !st.skipped && st.pct >= 100);
+  btnNext.style.display = isCorrect ? 'inline-block' : 'none';
+  btnNext.textContent = currentIndex >= total - 1 ? 'Завершити' : 'Наступне →';
 }
 
 function shuffle(arr) {
