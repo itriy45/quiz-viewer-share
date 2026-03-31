@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Added robust local JSON loading fallback plus persistent quiz progress via localStorage with reset/export/import controls. -->
+<!-- Updated: Added responsive mobile layout (drawer sidebar, touch-friendly controls) and a short usage guide while keeping persistent progress features. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -14,6 +14,7 @@
     position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
     background: #fff; border-right: 1px solid #e5e5e5;
     overflow-y: auto; padding: 1rem 0; z-index: 100;
+    transition: transform 0.2s ease;
   }
   #sidebar h1 { font-size: 13px; font-weight: 600; color: #888; padding: 0 1rem 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .section-btn {
@@ -28,6 +29,14 @@
 
   /* Main */
   #main { margin-left: 260px; padding: 2rem; max-width: 780px; }
+  .mobile-only { display: none; }
+  .desktop-only { display: inline-block; }
+
+  #usage-note {
+    margin-bottom: 1rem; padding: 0.75rem 1rem;
+    background: #fff; border: 1px solid #e5e5e5; border-radius: 10px;
+    font-size: 13px; color: #555; line-height: 1.5;
+  }
 
   /* Top bar */
   #topbar {
@@ -140,6 +149,50 @@
   /* Shuffle mode: one at a time */
   #single-view { display: none; }
   .big-q { font-size: 16px; font-weight: 500; line-height: 1.6; margin-bottom: 1.25rem; }
+
+  @media (max-width: 900px) {
+    #sidebar {
+      width: min(85vw, 320px);
+      transform: translateX(-100%);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.2);
+    }
+    #sidebar.open { transform: translateX(0); }
+    #main {
+      margin-left: 0;
+      max-width: 100%;
+      padding: 1rem;
+    }
+    .mobile-only { display: inline-block; }
+    .desktop-only { display: none; }
+    #topbar { gap: 0.6rem; }
+    #topbar h2 { font-size: 16px; min-width: 100%; }
+    #mode-selector { width: 100%; }
+    .mode-btn {
+      flex: 1;
+      padding: 9px 12px;
+      font-size: 13px;
+    }
+    button.show-all, button.check, button.next, .nav-btn {
+      min-height: 38px;
+    }
+    #score-bar {
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      padding: 0.65rem 0.75rem;
+    }
+    #progress-info {
+      margin-left: 0 !important;
+      width: 100%;
+    }
+    #nav-row {
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+    #btn-prev, #btn-next {
+      flex: 1;
+      min-width: 130px;
+    }
+  }
 </style>
 </head>
 <body>
@@ -163,17 +216,22 @@
   </div>
 
   <div id="topbar">
+    <button class="show-all mobile-only" onclick="toggleSidebar()">Розділи</button>
     <h2 id="section-title">Оберіть розділ</h2>
     <div id="mode-selector">
       <button class="mode-btn active" onclick="setMode('all')">Всі питання</button>
       <button class="mode-btn" onclick="setMode('shuffle')">Тренування</button>
     </div>
-    <div style="display:flex;gap:6px;align-items:center">
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <button class="show-all" onclick="resetProgress()">Скинути прогрес</button>
-      <button class="show-all" onclick="exportProgress()">Експорт прогресу</button>
+      <button class="show-all desktop-only" onclick="exportProgress()">Експорт прогресу</button>
       <button class="show-all" onclick="document.getElementById('import-progress-input').click()">Імпорт прогресу</button>
       <input id="import-progress-input" type="file" accept=".json,application/json" style="display:none" onchange="importProgress(event)">
     </div>
+  </div>
+
+  <div id="usage-note">
+    Коротко: оберіть розділ, дайте відповіді і натискайте "Перевірити". Ваш прогрес автоматично зберігається в цьому браузері, тож можна продовжити пізніше.
   </div>
 
   <div id="progress-wrap"><div id="progress-bar" style="width:0%"></div></div>
@@ -331,6 +389,7 @@ function selectSection(i, options = {}) {
   }
   if (mode === 'all') renderAll();
   else renderSingle();
+  closeSidebarOnMobile();
   saveProgress();
 }
 
@@ -721,6 +780,17 @@ function importProgress(evt) {
     }
   };
   reader.readAsText(file, 'utf-8');
+}
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.classList.toggle('open');
+}
+
+function closeSidebarOnMobile() {
+  if (window.innerWidth <= 900) {
+    document.getElementById('sidebar').classList.remove('open');
+  }
 }
 
 function shuffle(arr) {
