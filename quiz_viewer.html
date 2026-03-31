@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Switched to one-question-per-screen quiz flow with check/skip/next UX, persistent progress, and mobile-friendly navigation. -->
+<!-- Updated: Added distraction-free test view by hiding non-test menus during quiz interaction, while keeping one-question training flow and persistence. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -149,6 +149,19 @@
   /* Shuffle mode: one at a time */
   #single-view { display: none; }
   .big-q { font-size: 16px; font-weight: 500; line-height: 1.6; margin-bottom: 1.25rem; }
+
+  /* Focus mode: hide non-test controls during interaction */
+  body.focus-test #sidebar,
+  body.focus-test #topbar,
+  body.focus-test #usage-note {
+    display: none !important;
+  }
+  body.focus-test #main {
+    margin-left: auto;
+    margin-right: auto;
+    max-width: 860px;
+    padding-top: 1.25rem;
+  }
 
   @media (max-width: 900px) {
     #sidebar {
@@ -350,6 +363,7 @@ function applyLoadedData(data) {
     throw new Error('JSON has invalid structure');
   }
   allData = data;
+  document.body.classList.add('focus-test');
   buildSidebar();
   restoreProgressOrDefault();
 }
