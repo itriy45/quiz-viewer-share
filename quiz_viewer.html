@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Reduced quiz header footprint and moved Next action into the test card for faster one-question navigation, while preserving focus mode and persistence. -->
+<!-- Updated: Added compact always-visible section switcher for focus mode/mobile navigation, while preserving fast one-question quiz flow and persistence. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -157,6 +157,39 @@
   body.focus-test #usage-note {
     display: none !important;
   }
+  body.focus-test #sidebar.open {
+    display: block !important;
+  }
+  #focus-open-sections {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 220;
+    display: none;
+    padding: 6px 10px;
+    font-size: 12px;
+    border: 1px solid #d7d7d7;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.95);
+    color: #333;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  body.focus-test #focus-open-sections {
+    display: inline-block;
+  }
+  #sidebar-close {
+    display: none;
+    margin: 0 1rem 0.75rem;
+    padding: 5px 10px;
+    font-size: 12px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+  }
+  #sidebar-close:hover { background: #f5f5f3; }
   body.focus-test #main {
     margin-left: auto;
     margin-right: auto;
@@ -170,6 +203,7 @@
       transform: translateX(-100%);
       box-shadow: 0 10px 24px rgba(0,0,0,0.2);
     }
+    #sidebar-close { display: inline-block; }
     #sidebar.open { transform: translateX(0); }
     #main {
       margin-left: 0;
@@ -213,8 +247,10 @@
 
 <div id="sidebar">
   <h1>Розділи</h1>
+  <button id="sidebar-close" onclick="closeSidebar()">Закрити ✕</button>
   <div id="section-list"></div>
 </div>
+<button id="focus-open-sections" onclick="openSidebar()">Розділи</button>
 
 <div id="main">
   <div id="q-list"></div>
@@ -750,10 +786,16 @@ function toggleSidebar() {
   sidebar.classList.toggle('open');
 }
 
+function openSidebar() {
+  document.getElementById('sidebar').classList.add('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+}
+
 function closeSidebarOnMobile() {
-  if (window.innerWidth <= 900) {
-    document.getElementById('sidebar').classList.remove('open');
-  }
+  document.getElementById('sidebar').classList.remove('open');
 }
 
 function buildQuestionOrder(total, nextMode) {
