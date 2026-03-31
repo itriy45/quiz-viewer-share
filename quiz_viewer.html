@@ -344,9 +344,10 @@ let currentIndex = 0;
 let orderMode = 'sequential';
 let sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
 let answerState = {};
+let sectionNav = {};   // { sectionTitle: { currentIndex, questionOrder } }
 let currentStreak = 0;
 const STORAGE_KEY = 'quiz_progress_v1';
-const STORAGE_VERSION = 2;
+const STORAGE_VERSION = 3;
 
 // Try loading JSON from same directory; if blocked on file://, fallback to manual picker.
 loadQuestions();
@@ -475,28 +476,41 @@ function selectAllSections() {
   );
   currentSection = { title: 'Всі розділи', questions: allQuestions, _isAllSections: true };
   document.getElementById('section-title').textContent = currentSection.title;
-  currentIndex = 0;
-  questionOrder = buildQuestionOrder(allQuestions.length, orderMode);
-  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
-  currentStreak = 0;
+
+  const savedNav = sectionNav['__all__'];
+  if (savedNav && Array.isArray(savedNav.questionOrder) && savedNav.questionOrder.length) {
+    currentIndex = Number.isInteger(savedNav.currentIndex) ? savedNav.currentIndex : 0;
+    questionOrder = savedNav.questionOrder;
+  } else {
+    currentIndex = 0;
+    questionOrder = buildQuestionOrder(allQuestions.length, orderMode);
+    sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+    currentStreak = 0;
+  }
+
   renderCurrentQuestion();
   closeSidebarOnMobile();
   saveProgress();
 }
 
 function selectSection(i, options = {}) {
-  const preserveSession = Boolean(options.preserveSession);
   document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
-  // Find button by dataset.i since the "All" button is at index 0 now
   document.querySelector(`.section-btn[data-i="${i}"]`)?.classList.add('active');
   currentSection = allData[i];
   document.getElementById('section-title').textContent = currentSection.title;
-  if (!preserveSession) {
+
+  // Always restore per-section navigation position if saved
+  const savedNav = sectionNav[currentSection.title];
+  if (savedNav && Array.isArray(savedNav.questionOrder) && savedNav.questionOrder.length) {
+    currentIndex = Number.isInteger(savedNav.currentIndex) ? savedNav.currentIndex : 0;
+    questionOrder = savedNav.questionOrder;
+  } else {
     currentIndex = 0;
     questionOrder = buildQuestionOrder(currentSection.questions.length, orderMode);
     sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
     currentStreak = 0;
   }
+
   renderCurrentQuestion();
   closeSidebarOnMobile();
   saveProgress();
@@ -518,6 +532,9 @@ function setOrderMode(nextMode) {
   }
   currentIndex = 0;
   questionOrder = buildQuestionOrder(currentSection.questions.length, orderMode);
+  // Clear saved nav for this section so the mode change takes effect on next visit too
+  const navKeyMode = currentSection._isAllSections ? '__all__' : currentSection.title;
+  delete sectionNav[navKeyMode];
   updateOrderButtons();
   renderCurrentQuestion();
   saveProgress();
@@ -832,15 +849,19 @@ function applySavedAnswerState(card, q) {
 function saveProgress() {
   if (!allData.length) return;
   const isAllSections = Boolean(currentSection && currentSection._isAllSections);
+  // Snapshot current navigation position for this section
+  if (currentSection) {
+    const navKey = isAllSections ? '__all__' : currentSection.title;
+    sectionNav[navKey] = { currentIndex, questionOrder };
+  }
   const payload = {
     v: STORAGE_VERSION,
-    sectionIndex: isAllSections ? -1 : allData.indexOf(currentSection),
+    lastSectionIndex: isAllSections ? -1 : allData.indexOf(currentSection),
     isAllSections,
     orderMode,
-    currentIndex,
-    questionOrder,
     sessionStats,
-    answerState
+    answerState,
+    sectionNav
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -854,11 +875,34 @@ function loadProgress() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (!parsed || parsed.v !== STORAGE_VERSION) return null;
+    if (!parsed) return null;
+    if (parsed.v === 2) return migrateV2(parsed);
+    if (parsed.v !== STORAGE_VERSION) return null;
     return parsed;
   } catch (_) {
     return null;
   }
+}
+
+function migrateV2(old) {
+  // Preserve all answers; reconstruct sectionNav from the single saved position
+  const nav = {};
+  const secIdx = old.sectionIndex;
+  if (Number.isInteger(secIdx) && secIdx >= 0 && allData[secIdx]) {
+    nav[allData[secIdx].title] = {
+      currentIndex: old.currentIndex || 0,
+      questionOrder: Array.isArray(old.questionOrder) ? old.questionOrder : []
+    };
+  }
+  return {
+    v: STORAGE_VERSION,
+    lastSectionIndex: secIdx,
+    isAllSections: Boolean(old.isAllSections),
+    orderMode: old.orderMode || 'sequential',
+    sessionStats: old.sessionStats || { correct: 0, partial: 0, wrong: 0, skip: 0 },
+    answerState: old.answerState || {},
+    sectionNav: nav
+  };
 }
 
 function restoreProgressOrDefault() {
@@ -870,27 +914,29 @@ function restoreProgressOrDefault() {
 
   const validModes = ['sequential', 'random', 'mistakes'];
   orderMode = validModes.includes(saved.orderMode) ? saved.orderMode : 'sequential';
-
   answerState = saved.answerState && typeof saved.answerState === 'object' ? saved.answerState : {};
-  currentIndex = Number.isInteger(saved.currentIndex) && saved.currentIndex >= 0 ? saved.currentIndex : 0;
-  questionOrder = Array.isArray(saved.questionOrder) ? saved.questionOrder : [];
+  sectionNav  = saved.sectionNav  && typeof saved.sectionNav  === 'object' ? saved.sectionNav  : {};
   sessionStats = saved.sessionStats && typeof saved.sessionStats === 'object'
     ? {
         correct: saved.sessionStats.correct || 0,
         partial: saved.sessionStats.partial || 0,
-        wrong: saved.sessionStats.wrong || 0,
-        skip: saved.sessionStats.skip || 0
+        wrong:   saved.sessionStats.wrong   || 0,
+        skip:    saved.sessionStats.skip    || 0
       }
     : { correct: 0, partial: 0, wrong: 0, skip: 0 };
 
   if (saved.isAllSections) {
-    // Restore "all sections" virtual mode
     const allQuestions = allData.flatMap(sec =>
       sec.questions.map(q => ({ ...q, _sectionTitle: sec.title }))
     );
     currentSection = { title: 'Всі розділи', questions: allQuestions, _isAllSections: true };
     document.getElementById('section-title').textContent = currentSection.title;
-    if (!questionOrder.length) {
+    const savedNav = sectionNav['__all__'];
+    if (savedNav && Array.isArray(savedNav.questionOrder) && savedNav.questionOrder.length) {
+      currentIndex = Number.isInteger(savedNav.currentIndex) ? savedNav.currentIndex : 0;
+      questionOrder = savedNav.questionOrder;
+    } else {
+      currentIndex = 0;
       questionOrder = buildQuestionOrder(allQuestions.length, orderMode);
     }
     updateOrderButtons();
@@ -899,20 +945,20 @@ function restoreProgressOrDefault() {
     return;
   }
 
-  const sectionIndex = Number.isInteger(saved.sectionIndex) && saved.sectionIndex >= 0 && saved.sectionIndex < allData.length
-    ? saved.sectionIndex
+  const lastSectionIndex = Number.isInteger(saved.lastSectionIndex) && saved.lastSectionIndex >= 0 && saved.lastSectionIndex < allData.length
+    ? saved.lastSectionIndex
     : 0;
 
-  if (!questionOrder.length && allData[sectionIndex]) {
-    questionOrder = buildQuestionOrder(allData[sectionIndex].questions.length, orderMode);
-  }
-  selectSection(sectionIndex, { preserveSession: true });
+  updateOrderButtons();
+  // selectSection will pick up currentIndex/questionOrder from sectionNav automatically
+  selectSection(lastSectionIndex);
 }
 
 function resetProgress() {
   if (!confirm('Скинути весь збережений прогрес?')) return;
   localStorage.removeItem(STORAGE_KEY);
   answerState = {};
+  sectionNav = {};
   orderMode = 'sequential';
   currentIndex = 0;
   currentStreak = 0;
@@ -951,8 +997,10 @@ function importProgress(evt) {
   reader.onload = () => {
     try {
       const parsed = JSON.parse(String(reader.result || ''));
-      if (!parsed || parsed.v !== STORAGE_VERSION) throw new Error('bad version');
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      if (!parsed || (parsed.v !== STORAGE_VERSION && parsed.v !== 2)) throw new Error('bad version');
+      // Migrate v2 exports on import as well
+      const toStore = parsed.v === 2 ? migrateV2(parsed) : parsed;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
       if (allData.length > 0) restoreProgressOrDefault();
       alert('Прогрес імпортовано.');
     } catch (_) {
