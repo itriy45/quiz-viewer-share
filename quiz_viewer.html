@@ -26,6 +26,14 @@
   .section-btn:hover { background: #f5f5f3; }
   .section-btn.active { border-left-color: #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: 500; }
   .section-count { font-size: 11px; color: #aaa; margin-left: 4px; }
+  .sec-progress-wrap { height: 3px; background: #eee; border-radius: 2px; margin-top: 4px; }
+  .sec-progress-fill { height: 100%; border-radius: 2px; }
+  .streak-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px; background: #fff7ed;
+    border: 1px solid #fed7aa; font-size: 12px; color: #c2410c; font-weight: 600;
+  }
+  .kbd { display: inline-block; padding: 1px 5px; border: 1px solid #ccc; border-radius: 4px; font-size: 11px; background: #f5f5f3; color: #555; font-family: monospace; }
 
   /* Main */
   #main { margin-left: 260px; padding: 2rem; max-width: 780px; }
@@ -272,6 +280,7 @@
     <div id="order-selector">
       <button class="mode-btn active" onclick="setOrderMode('sequential')">По черзі</button>
       <button class="mode-btn" onclick="setOrderMode('random')">Випадково</button>
+      <button class="mode-btn" onclick="setOrderMode('mistakes')" id="mistakes-btn" title="Тільки питання без правильної відповіді">Помилки</button>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <button class="show-all" onclick="resetProgress()">Скинути прогрес</button>
@@ -282,7 +291,8 @@
   </div>
 
   <div id="usage-note">
-    Коротко: на екрані лише одне питання. Оберіть відповідь, натисніть "Перевірити", потім перейдіть далі. Прогрес автоматично зберігається в цьому браузері.
+    Оберіть відповідь → Перевірити → Наступне. Прогрес зберігається автоматично.
+    <span class="desktop-only" style="color:#aaa"> · Клавіатура: <span class="kbd">Enter</span> перевірити/далі · <span class="kbd">1–9</span> вибрати варіант · <span class="kbd">←→</span> навігація</span>
   </div>
 
   <div id="progress-wrap"><div id="progress-bar" style="width:0%"></div></div>
@@ -292,6 +302,7 @@
     <div class="score-item"><div class="dot dot-yellow"></div><span id="s-partial">0 частково</span></div>
     <div class="score-item"><div class="dot dot-red"></div><span id="s-wrong">0 неправильно</span></div>
     <div class="score-item"><div class="dot dot-gray"></div><span id="s-skip">0 пропущено</span></div>
+    <span id="streak-display" style="display:none" class="streak-badge">🔥 <span id="streak-count">0</span></span>
     <span id="progress-info" style="margin-left:auto"></span>
   </div>
 
@@ -330,6 +341,7 @@ let currentIndex = 0;
 let orderMode = 'sequential';
 let sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
 let answerState = {};
+let currentStreak = 0;
 const STORAGE_KEY = 'quiz_progress_v1';
 const STORAGE_VERSION = 2;
 
@@ -408,26 +420,79 @@ function applyLoadedData(data) {
 function buildSidebar() {
   const list = document.getElementById('section-list');
   list.innerHTML = '';
+
+  // "All sections" virtual entry
+  const totalAll = allData.reduce((s, sec) => s + sec.questions.length, 0);
+  const allBtn = document.createElement('button');
+  allBtn.className = 'section-btn';
+  allBtn.id = 'section-btn-all';
+  allBtn.innerHTML = `Всі розділи <span class="section-count">${totalAll}</span>`;
+  allBtn.onclick = () => selectAllSections();
+  list.appendChild(allBtn);
+
   allData.forEach((sec, i) => {
     const btn = document.createElement('button');
     btn.className = 'section-btn';
-    btn.innerHTML = `${sec.title} <span class="section-count">${sec.questions.length}</span>`;
-    btn.onclick = () => selectSection(i);
     btn.dataset.i = i;
+    const total = sec.questions.length;
+    let correct = 0, answered = 0;
+    sec.questions.forEach(q => {
+      const st = answerState[`${sec.title}::${q.id}`];
+      if (st && st.graded) { answered++; if (!st.skipped && st.pct >= 100) correct++; }
+    });
+    const pct = total > 0 ? Math.round((correct / total) * 100) : 0;
+    const barColor = pct >= 80 ? '#16a34a' : pct >= 40 ? '#d97706' : '#dc2626';
+    const barHtml = answered > 0
+      ? `<div class="sec-progress-wrap"><div class="sec-progress-fill" style="width:${pct}%;background:${barColor}"></div></div>`
+      : '';
+    btn.innerHTML = `${escHtml(sec.title)} <span class="section-count">${total}</span>${barHtml}`;
+    btn.onclick = () => selectSection(i);
     list.appendChild(btn);
   });
+
+  // Reapply active state after full DOM rebuild
+  refreshSidebarActive();
+}
+
+function refreshSidebarActive() {
+  if (!currentSection) return;
+  if (currentSection._isAllSections) {
+    document.getElementById('section-btn-all')?.classList.add('active');
+  } else {
+    const idx = allData.indexOf(currentSection);
+    if (idx >= 0) document.querySelector(`.section-btn[data-i="${idx}"]`)?.classList.add('active');
+  }
+}
+
+function selectAllSections() {
+  document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('section-btn-all')?.classList.add('active');
+  const allQuestions = allData.flatMap(sec =>
+    sec.questions.map(q => ({ ...q, _sectionTitle: sec.title }))
+  );
+  currentSection = { title: 'Всі розділи', questions: allQuestions, _isAllSections: true };
+  document.getElementById('section-title').textContent = currentSection.title;
+  currentIndex = 0;
+  questionOrder = buildQuestionOrder(allQuestions.length, orderMode);
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  currentStreak = 0;
+  renderCurrentQuestion();
+  closeSidebarOnMobile();
+  saveProgress();
 }
 
 function selectSection(i, options = {}) {
   const preserveSession = Boolean(options.preserveSession);
   document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.section-btn')[i]?.classList.add('active');
+  // Find button by dataset.i since the "All" button is at index 0 now
+  document.querySelector(`.section-btn[data-i="${i}"]`)?.classList.add('active');
   currentSection = allData[i];
   document.getElementById('section-title').textContent = currentSection.title;
   if (!preserveSession) {
     currentIndex = 0;
     questionOrder = buildQuestionOrder(currentSection.questions.length, orderMode);
     sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+    currentStreak = 0;
   }
   renderCurrentQuestion();
   closeSidebarOnMobile();
@@ -442,8 +507,12 @@ function setOrderMode(nextMode) {
   }
   if (orderMode === nextMode) return;
   orderMode = nextMode;
-  answerState = {};
-  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  // "mistakes" mode doesn't clear answers — it filters based on existing answers
+  if (nextMode !== 'mistakes') {
+    answerState = {};
+    sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+    currentStreak = 0;
+  }
   currentIndex = 0;
   questionOrder = buildQuestionOrder(currentSection.questions.length, orderMode);
   updateOrderButtons();
@@ -453,10 +522,22 @@ function setOrderMode(nextMode) {
 
 function updateOrderButtons() {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-  const btn = orderMode === 'sequential'
-    ? document.querySelector('#order-selector .mode-btn:nth-child(1)')
-    : document.querySelector('#order-selector .mode-btn:nth-child(2)');
+  let btn;
+  if (orderMode === 'sequential') btn = document.querySelector('#order-selector .mode-btn:nth-child(1)');
+  else if (orderMode === 'random')  btn = document.querySelector('#order-selector .mode-btn:nth-child(2)');
+  else if (orderMode === 'mistakes') btn = document.getElementById('mistakes-btn');
   if (btn) btn.classList.add('active');
+
+  // Show live mistake count on the button
+  const mistakesBtn = document.getElementById('mistakes-btn');
+  if (mistakesBtn && currentSection) {
+    let mistakeCount = 0;
+    currentSection.questions.forEach(q => {
+      const st = answerState[getQuestionKey(q)];
+      if (!st || !st.graded || st.skipped || st.pct < 100) mistakeCount++;
+    });
+    mistakesBtn.textContent = mistakeCount > 0 ? `Помилки (${mistakeCount})` : 'Помилки ✓';
+  }
 }
 
 function renderCurrentQuestion() {
@@ -473,7 +554,10 @@ function renderCurrentQuestion() {
   document.getElementById('score-bar').style.display = 'flex';
   document.getElementById('single-card').style.display = 'block';
   document.getElementById('final').style.display = 'none';
-  document.getElementById('s-meta').textContent = `Питання ${currentIndex + 1} з ${total}`;
+  const savedMeta = answerState[getQuestionKey(q)];
+  const attempts = savedMeta && savedMeta.attempts ? savedMeta.attempts : 0;
+  const attemptHint = attempts > 0 ? ` · спроба ${attempts + 1}` : '';
+  document.getElementById('s-meta').textContent = `Питання ${currentIndex + 1} з ${total}${attemptHint}`;
   document.getElementById('s-text').textContent = q.text;
   document.getElementById('s-hint').textContent = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
   document.getElementById('s-result').innerHTML = '';
@@ -497,7 +581,6 @@ function renderCurrentQuestion() {
   wrap.dataset.q = JSON.stringify(q);
   document.getElementById('page-info').textContent = `${currentIndex + 1} з ${total}`;
   document.getElementById('btn-prev').disabled = currentIndex === 0;
-  updateNextButtonVisibility();
 
   const checkBtn = document.getElementById('s-check-btn');
   const skipBtn = document.getElementById('s-skip-btn');
@@ -510,8 +593,10 @@ function renderCurrentQuestion() {
   if (saved && saved.graded) {
     applySavedAnswerState(wrap, q);
     checkBtn.textContent = 'Перевірити ще раз';
-    updateNextButtonVisibility();
   }
+
+  // Single call after all state is applied
+  updateNextButtonVisibility();
 
   updateScoreBar();
   const pct = total > 0 ? (currentIndex / total) * 100 : 0;
@@ -566,10 +651,23 @@ function evaluateCurrentAnswer(showPickHint) {
   document.getElementById('s-result').innerHTML = `<div class="q-result ${cls}" style="margin-top:0.75rem">${label}</div>`;
 
   const selected = Array.from(inputs).map((inp, idx) => inp.checked ? idx : null).filter(v => v !== null);
-  answerState[getQuestionKey(q)] = { selected, pct, graded: true, skipped: false };
+  const key = getQuestionKey(q);
+  const prevState = answerState[key];
+  const prevAttempts = prevState && prevState.attempts ? prevState.attempts : 0;
+  answerState[key] = { selected, pct, graded: true, skipped: false, attempts: prevAttempts + 1 };
+
+  // Streak tracking
+  if (pct >= 100) {
+    currentStreak++;
+  } else {
+    currentStreak = 0;
+  }
+  updateStreakDisplay();
+
   document.getElementById('s-check-btn').textContent = 'Перевірити ще раз';
   updateNextButtonVisibility();
   updateScoreBar();
+  buildSidebar();
   saveProgress();
 }
 
@@ -605,6 +703,7 @@ function restartShuffle() {
   currentIndex = 0;
   questionOrder = buildQuestionOrder(currentSection.questions.length, orderMode);
   sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  currentStreak = 0;
   answerState = {};
   document.getElementById('final').style.display = 'none';
   document.getElementById('single-card').style.display = 'block';
@@ -635,10 +734,24 @@ function updateScoreBar() {
   document.getElementById('s-wrong').textContent = `${sessionStats.wrong} неправильно`;
   document.getElementById('s-skip').textContent = `${sessionStats.skip} пропущено`;
   document.getElementById('progress-info').textContent = `${done} з ${total}`;
+  updateStreakDisplay();
+  updateOrderButtons();
+}
+
+function updateStreakDisplay() {
+  const el = document.getElementById('streak-display');
+  const cnt = document.getElementById('streak-count');
+  if (currentStreak >= 3) {
+    el.style.display = 'inline-flex';
+    cnt.textContent = currentStreak;
+  } else {
+    el.style.display = 'none';
+  }
 }
 
 function getQuestionKey(q) {
-  const sec = currentSection ? currentSection.title : 'unknown-section';
+  // q._sectionTitle is set when using "all sections" virtual mode
+  const sec = q._sectionTitle || (currentSection ? currentSection.title : 'unknown-section');
   return `${sec}::${q.id}`;
 }
 
@@ -669,9 +782,11 @@ function applySavedAnswerState(card, q) {
 
 function saveProgress() {
   if (!allData.length) return;
+  const isAllSections = Boolean(currentSection && currentSection._isAllSections);
   const payload = {
     v: STORAGE_VERSION,
-    sectionIndex: allData.indexOf(currentSection),
+    sectionIndex: isAllSections ? -1 : allData.indexOf(currentSection),
+    isAllSections,
     orderMode,
     currentIndex,
     questionOrder,
@@ -704,8 +819,8 @@ function restoreProgressOrDefault() {
     return;
   }
 
-  orderMode = saved.orderMode === 'random' ? 'random' : 'sequential';
-  updateOrderButtons();
+  const validModes = ['sequential', 'random', 'mistakes'];
+  orderMode = validModes.includes(saved.orderMode) ? saved.orderMode : 'sequential';
 
   answerState = saved.answerState && typeof saved.answerState === 'object' ? saved.answerState : {};
   currentIndex = Number.isInteger(saved.currentIndex) && saved.currentIndex >= 0 ? saved.currentIndex : 0;
@@ -718,6 +833,22 @@ function restoreProgressOrDefault() {
         skip: saved.sessionStats.skip || 0
       }
     : { correct: 0, partial: 0, wrong: 0, skip: 0 };
+
+  if (saved.isAllSections) {
+    // Restore "all sections" virtual mode
+    const allQuestions = allData.flatMap(sec =>
+      sec.questions.map(q => ({ ...q, _sectionTitle: sec.title }))
+    );
+    currentSection = { title: 'Всі розділи', questions: allQuestions, _isAllSections: true };
+    document.getElementById('section-title').textContent = currentSection.title;
+    if (!questionOrder.length) {
+      questionOrder = buildQuestionOrder(allQuestions.length, orderMode);
+    }
+    updateOrderButtons();
+    renderCurrentQuestion();
+    refreshSidebarActive();
+    return;
+  }
 
   const sectionIndex = Number.isInteger(saved.sectionIndex) && saved.sectionIndex >= 0 && saved.sectionIndex < allData.length
     ? saved.sectionIndex
@@ -735,6 +866,7 @@ function resetProgress() {
   answerState = {};
   orderMode = 'sequential';
   currentIndex = 0;
+  currentStreak = 0;
   sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
   if (allData.length > 0) {
     selectSection(0);
@@ -799,13 +931,26 @@ function closeSidebarOnMobile() {
 }
 
 function buildQuestionOrder(total, nextMode) {
+  if (nextMode === 'mistakes') {
+    const indices = [];
+    for (let i = 0; i < total; i++) {
+      const q = currentSection.questions[i];
+      const st = answerState[getQuestionKey(q)];
+      if (!st || !st.graded || st.skipped || st.pct < 100) indices.push(i);
+    }
+    // If all correct, show all (don't leave user with empty list)
+    const pool = indices.length > 0 ? indices : [...Array(total).keys()];
+    return shuffle(pool);
+  }
   const base = [...Array(total).keys()];
   return nextMode === 'random' ? shuffle(base) : base;
 }
 
 function calculateStats() {
   const stats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
-  Object.values(answerState).forEach(st => {
+  if (!currentSection) return stats;
+  currentSection.questions.forEach(q => {
+    const st = answerState[getQuestionKey(q)];
     if (!st || !st.graded) return;
     if (st.skipped) stats.skip++;
     else if (st.pct >= 100) stats.correct++;
@@ -817,12 +962,15 @@ function calculateStats() {
 
 function updateNextButtonVisibility() {
   const btnNext = document.getElementById('s-next-inline-btn');
+  const btnSkip = document.getElementById('s-skip-btn');
   const total = currentSection.questions.length;
   const q = currentSection.questions[questionOrder[currentIndex]];
   const st = q ? answerState[getQuestionKey(q)] : null;
-  const isCorrect = Boolean(st && st.graded && !st.skipped && st.pct >= 100);
-  btnNext.style.display = isCorrect ? 'inline-block' : 'none';
+  const isAnswered = Boolean(st && st.graded);
+  btnNext.style.display = isAnswered ? 'inline-block' : 'none';
   btnNext.textContent = currentIndex >= total - 1 ? 'Завершити' : 'Наступне →';
+  // Hide "Skip" once the question has been graded — Next covers that function
+  if (btnSkip) btnSkip.style.display = isAnswered ? 'none' : 'inline-block';
 }
 
 function shuffle(arr) {
@@ -836,6 +984,38 @@ function shuffle(arr) {
 function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+  if (!currentSection) return;
+  const tag = e.target.tagName;
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return;
+
+  // Enter / Space = check if unanswered, else go to next
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    const nextBtn = document.getElementById('s-next-inline-btn');
+    const checkBtn = document.getElementById('s-check-btn');
+    if (nextBtn && nextBtn.style.display !== 'none') {
+      goToQuestion(1);
+    } else if (checkBtn && !checkBtn.disabled) {
+      checkCurrent();
+    }
+    return;
+  }
+
+  // 1–9 = toggle option by index
+  if (e.key >= '1' && e.key <= '9') {
+    const idx = parseInt(e.key) - 1;
+    const inputs = document.querySelectorAll('#s-options input');
+    if (inputs[idx]) { inputs[idx].click(); }
+    return;
+  }
+
+  // Arrow keys = navigate (only when not inside option area)
+  if (e.key === 'ArrowRight') { e.preventDefault(); goToQuestion(1); }
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); goToQuestion(-1); }
+});
 
 // Initial state
 document.getElementById('single-view').style.display = 'block';
