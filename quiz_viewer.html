@@ -320,10 +320,13 @@
       <div id="s-result"></div>
     </div>
     <div id="final">
-      <h2>Тренування завершено!</h2>
+      <h2 id="final-title">Тренування завершено!</h2>
       <div class="big-score" id="final-score"></div>
       <p id="final-detail"></p>
-      <button class="restart" onclick="restartShuffle()">Почати знову</button>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:1rem">
+        <button class="restart" id="btn-repeat-mistakes" onclick="repeatMistakes()" style="display:none;background:#d97706;border-color:#d97706"></button>
+        <button class="restart" onclick="restartShuffle()">Почати знову</button>
+      </div>
     </div>
   </div>
 
@@ -557,7 +560,10 @@ function renderCurrentQuestion() {
   const savedMeta = answerState[getQuestionKey(q)];
   const attempts = savedMeta && savedMeta.attempts ? savedMeta.attempts : 0;
   const attemptHint = attempts > 0 ? ` · спроба ${attempts + 1}` : '';
-  document.getElementById('s-meta').textContent = `Питання ${currentIndex + 1} з ${total}${attemptHint}`;
+  const positionLabel = orderMode === 'mistakes'
+    ? `Питання ${currentIndex + 1} з ${questionOrder.length} (помилки)${attemptHint}`
+    : `Питання ${currentIndex + 1} з ${total}${attemptHint}`;
+  document.getElementById('s-meta').textContent = positionLabel;
   document.getElementById('s-text').textContent = q.text;
   document.getElementById('s-hint').textContent = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
   document.getElementById('s-result').innerHTML = '';
@@ -715,14 +721,57 @@ function showFinal() {
   document.getElementById('single-card').style.display = 'none';
   document.getElementById('final').style.display = 'block';
   document.getElementById('nav-row').style.display = 'none';
-  const total = currentSection.questions.length;
   const stats = calculateStats();
   sessionStats = stats;
-  const pct = total > 0 ? Math.round((sessionStats.correct / total) * 100) : 0;
+  const queueLen = questionOrder.length;
+  const pct = queueLen > 0 ? Math.round((sessionStats.correct / queueLen) * 100) : 0;
+  const remaining = countRemainingMistakes();
+
+  if (orderMode === 'mistakes') {
+    document.getElementById('final-title').textContent =
+      remaining === 0 ? 'Всі помилки виправлено! 🎉' : 'Сеанс помилок завершено';
+    document.getElementById('final-detail').textContent = remaining === 0
+      ? `${sessionStats.correct} з ${queueLen} правильно у цьому сеансі.`
+      : `${sessionStats.correct} з ${queueLen} правильно. Ще ${remaining} помилок у розділі.`;
+  } else {
+    document.getElementById('final-title').textContent = 'Тренування завершено!';
+    document.getElementById('final-detail').textContent =
+      `${sessionStats.correct} правильно · ${sessionStats.partial} частково · ${sessionStats.wrong} неправильно із ${queueLen} питань`;
+  }
+
   document.getElementById('final-score').textContent = pct + '%';
-  document.getElementById('final-detail').textContent =
-    `${sessionStats.correct} правильно · ${sessionStats.partial} частково · ${sessionStats.wrong} неправильно із ${total} питань`;
   document.getElementById('progress-bar').style.width = '100%';
+
+  // Show "Practice mistakes" button whenever there are remaining mistakes
+  const repeatBtn = document.getElementById('btn-repeat-mistakes');
+  if (remaining > 0) {
+    repeatBtn.style.display = 'inline-block';
+    repeatBtn.textContent = `Тренувати помилки (${remaining})`;
+  } else {
+    repeatBtn.style.display = 'none';
+  }
+}
+
+function countRemainingMistakes() {
+  if (!currentSection) return 0;
+  return currentSection.questions.filter(q => {
+    const st = answerState[getQuestionKey(q)];
+    return !st || !st.graded || st.skipped || st.pct < 100;
+  }).length;
+}
+
+function repeatMistakes() {
+  currentIndex = 0;
+  orderMode = 'mistakes';
+  questionOrder = buildQuestionOrder(currentSection.questions.length, 'mistakes');
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  currentStreak = 0;
+  // Keep answerState — history is preserved, only the queue is rebuilt
+  document.getElementById('final').style.display = 'none';
+  document.getElementById('single-card').style.display = 'block';
+  updateOrderButtons();
+  renderCurrentQuestion();
+  saveProgress();
 }
 
 function updateScoreBar() {
@@ -963,12 +1012,27 @@ function calculateStats() {
 function updateNextButtonVisibility() {
   const btnNext = document.getElementById('s-next-inline-btn');
   const btnSkip = document.getElementById('s-skip-btn');
-  const total = currentSection.questions.length;
+  const queueLen = questionOrder.length;
   const q = currentSection.questions[questionOrder[currentIndex]];
   const st = q ? answerState[getQuestionKey(q)] : null;
   const isAnswered = Boolean(st && st.graded);
   btnNext.style.display = isAnswered ? 'inline-block' : 'none';
-  btnNext.textContent = currentIndex >= total - 1 ? 'Завершити' : 'Наступне →';
+
+  const isLast = currentIndex >= queueLen - 1;
+  if (isLast) {
+    btnNext.textContent = 'Завершити';
+  } else if (orderMode === 'mistakes') {
+    // Count how many mistakes remain ahead in this queue
+    const remainingAhead = questionOrder.slice(currentIndex + 1).filter(qi => {
+      const ahead = currentSection.questions[qi];
+      const s = answerState[getQuestionKey(ahead)];
+      return !s || !s.graded || s.skipped || s.pct < 100;
+    }).length;
+    btnNext.textContent = remainingAhead > 0 ? `Наступне → (ще ${remainingAhead})` : 'Наступне →';
+  } else {
+    btnNext.textContent = 'Наступне →';
+  }
+
   // Hide "Skip" once the question has been graded — Next covers that function
   if (btnSkip) btnSkip.style.display = isAnswered ? 'none' : 'inline-block';
 }
