@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<!-- Updated: Added robust local JSON loading fallback plus persistent quiz progress via localStorage with reset/export/import controls. -->
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Мікробіологія — Тести</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f5f5f3; color: #1a1a1a; min-height: 100vh; }
+
+  /* Sidebar */
+  #sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0; width: 260px;
+    background: #fff; border-right: 1px solid #e5e5e5;
+    overflow-y: auto; padding: 1rem 0; z-index: 100;
+  }
+  #sidebar h1 { font-size: 13px; font-weight: 600; color: #888; padding: 0 1rem 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .section-btn {
+    display: block; width: 100%; text-align: left;
+    padding: 0.5rem 1rem; font-size: 13px; color: #333;
+    background: none; border: none; cursor: pointer;
+    border-left: 3px solid transparent; line-height: 1.4;
+  }
+  .section-btn:hover { background: #f5f5f3; }
+  .section-btn.active { border-left-color: #2563eb; background: #eff6ff; color: #1d4ed8; font-weight: 500; }
+  .section-count { font-size: 11px; color: #aaa; margin-left: 4px; }
+
+  /* Main */
+  #main { margin-left: 260px; padding: 2rem; max-width: 780px; }
+
+  /* Top bar */
+  #topbar {
+    display: flex; align-items: center; gap: 1rem;
+    margin-bottom: 1.5rem; flex-wrap: wrap;
+  }
+  #topbar h2 { font-size: 17px; font-weight: 500; flex: 1; }
+  #mode-selector { display: flex; gap: 6px; }
+  .mode-btn {
+    padding: 5px 12px; font-size: 12px; border-radius: 6px;
+    border: 1px solid #ddd; background: #fff; cursor: pointer; color: #555;
+  }
+  .mode-btn.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  #progress-info { font-size: 12px; color: #888; }
+
+  /* Progress bar */
+  #progress-wrap { height: 3px; background: #eee; border-radius: 2px; margin-bottom: 1.5rem; }
+  #progress-bar { height: 100%; background: #2563eb; border-radius: 2px; transition: width 0.3s; }
+
+  /* Score summary */
+  #score-bar {
+    display: flex; gap: 1rem; margin-bottom: 1.5rem;
+    padding: 0.75rem 1rem; background: #fff; border-radius: 10px;
+    border: 1px solid #e5e5e5; font-size: 13px;
+  }
+  .score-item { display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot-green { background: #16a34a; }
+  .dot-yellow { background: #d97706; }
+  .dot-red { background: #dc2626; }
+  .dot-gray { background: #ccc; }
+
+  /* Question card */
+  .q-card {
+    background: #fff; border: 1px solid #e5e5e5;
+    border-radius: 12px; padding: 1.25rem; margin-bottom: 1rem;
+  }
+  .q-meta { font-size: 11px; color: #aaa; margin-bottom: 6px; }
+  .q-text { font-size: 15px; line-height: 1.6; margin-bottom: 1rem; font-weight: 500; }
+  .q-hint { font-size: 12px; color: #888; margin-bottom: 0.75rem; }
+
+  /* Options */
+  .option {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 9px 12px; border: 1px solid #e5e5e5;
+    border-radius: 8px; margin-bottom: 7px; cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .option:hover { background: #f9f9f9; border-color: #d0d0d0; }
+  .option input { margin-top: 2px; flex-shrink: 0; cursor: pointer; accent-color: #2563eb; }
+  .option label { font-size: 14px; cursor: pointer; line-height: 1.5; flex: 1; }
+
+  /* Result states */
+  .option.res-correct { background: #f0fdf4; border-color: #86efac; }
+  .option.res-partial  { background: #fffbeb; border-color: #fcd34d; }
+  .option.res-wrong    { background: #fef2f2; border-color: #fca5a5; }
+  .option.res-missed   { border: 2px solid #86efac; }
+  .option label.lbl-correct { color: #15803d; font-weight: 500; }
+  .option label.lbl-partial  { color: #b45309; }
+  .option label.lbl-wrong    { color: #b91c1c; }
+
+  /* Score badge */
+  .q-result {
+    margin-top: 0.75rem; padding: 6px 12px; border-radius: 6px;
+    font-size: 12px; font-weight: 500; display: inline-block;
+  }
+  .q-result.full    { background: #f0fdf4; color: #16a34a; }
+  .q-result.partial { background: #fffbeb; color: #b45309; }
+  .q-result.zero    { background: #fef2f2; color: #dc2626; }
+
+  /* Buttons */
+  .btn-row { display: flex; gap: 8px; margin-top: 0.75rem; }
+  button.check {
+    padding: 7px 18px; font-size: 13px; border-radius: 7px;
+    border: 1px solid #2563eb; background: #2563eb; color: #fff; cursor: pointer;
+  }
+  button.check:hover { background: #1d4ed8; }
+  button.next {
+    padding: 7px 18px; font-size: 13px; border-radius: 7px;
+    border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer;
+  }
+  button.next:hover { background: #f5f5f3; }
+  button.show-all {
+    padding: 6px 14px; font-size: 12px; border-radius: 7px;
+    border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer;
+  }
+
+  /* Navigation */
+  #nav-row {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 0.5rem; padding-top: 0.5rem;
+  }
+  .nav-btn {
+    padding: 6px 16px; font-size: 13px; border-radius: 7px;
+    border: 1px solid #ddd; background: #fff; color: #333; cursor: pointer;
+  }
+  .nav-btn:hover { background: #f5f5f3; }
+  .nav-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* Final screen */
+  #final { display: none; text-align: center; padding: 3rem 1rem; }
+  #final h2 { font-size: 28px; font-weight: 500; margin-bottom: 0.5rem; }
+  #final p { color: #666; margin-bottom: 1.5rem; }
+  #final .big-score { font-size: 56px; font-weight: 600; color: #2563eb; line-height: 1; margin: 1rem 0; }
+  button.restart {
+    padding: 10px 24px; font-size: 14px; border-radius: 8px;
+    border: none; background: #2563eb; color: #fff; cursor: pointer;
+  }
+
+  /* Shuffle mode: one at a time */
+  #single-view { display: none; }
+  .big-q { font-size: 16px; font-weight: 500; line-height: 1.6; margin-bottom: 1.25rem; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>Розділи</h1>
+  <div id="section-list"></div>
+</div>
+
+<div id="main">
+  <div id="loader-panel" style="display:none;margin-bottom:1rem;padding:0.75rem 1rem;background:#fff;border:1px solid #e5e5e5;border-radius:10px">
+    <div id="loader-help" style="font-size:13px;color:#555;margin-bottom:0.5rem">
+      Не вдалося автоматично завантажити <code>questions.json</code>. Оберіть файл вручну.
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="json-picker" type="file" accept=".json,application/json">
+      <button class="show-all" onclick="loadFromPickedFile()">Завантажити JSON</button>
+      <button class="show-all" onclick="loadQuestions()">Спробувати ще раз</button>
+      <span id="loader-error" style="font-size:12px;color:#dc2626"></span>
+    </div>
+  </div>
+
+  <div id="topbar">
+    <h2 id="section-title">Оберіть розділ</h2>
+    <div id="mode-selector">
+      <button class="mode-btn active" onclick="setMode('all')">Всі питання</button>
+      <button class="mode-btn" onclick="setMode('shuffle')">Тренування</button>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="show-all" onclick="resetProgress()">Скинути прогрес</button>
+      <button class="show-all" onclick="exportProgress()">Експорт прогресу</button>
+      <button class="show-all" onclick="document.getElementById('import-progress-input').click()">Імпорт прогресу</button>
+      <input id="import-progress-input" type="file" accept=".json,application/json" style="display:none" onchange="importProgress(event)">
+    </div>
+  </div>
+
+  <div id="progress-wrap"><div id="progress-bar" style="width:0%"></div></div>
+
+  <div id="score-bar" style="display:none">
+    <div class="score-item"><div class="dot dot-green"></div><span id="s-correct">0 правильно</span></div>
+    <div class="score-item"><div class="dot dot-yellow"></div><span id="s-partial">0 частково</span></div>
+    <div class="score-item"><div class="dot dot-red"></div><span id="s-wrong">0 неправильно</span></div>
+    <div class="score-item"><div class="dot dot-gray"></div><span id="s-skip">0 пропущено</span></div>
+    <span id="progress-info" style="margin-left:auto"></span>
+  </div>
+
+  <!-- All questions mode -->
+  <div id="all-view">
+    <div id="q-list"></div>
+    <div id="nav-row" style="display:none">
+      <button class="nav-btn" id="btn-prev" onclick="goPage(-1)">← Попередні</button>
+      <span id="page-info" style="font-size:13px;color:#888"></span>
+      <button class="nav-btn" id="btn-next" onclick="goPage(1)">Наступні →</button>
+    </div>
+  </div>
+
+  <!-- Shuffle/Training mode -->
+  <div id="single-view">
+    <div class="q-card" id="single-card">
+      <div class="q-meta" id="s-meta"></div>
+      <div class="big-q" id="s-text"></div>
+      <div class="q-hint" id="s-hint"></div>
+      <div id="s-options"></div>
+      <div class="btn-row">
+        <button class="check" id="s-check-btn" onclick="checkSingle()">Перевірити</button>
+        <button class="next" id="s-next-btn" onclick="nextSingle()" style="display:none">Наступне →</button>
+      </div>
+      <div id="s-result"></div>
+    </div>
+    <div id="final">
+      <h2>Тренування завершено!</h2>
+      <div class="big-score" id="final-score"></div>
+      <p id="final-detail"></p>
+      <button class="restart" onclick="restartShuffle()">Почати знову</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let allData = [];
+let currentSection = null;
+let currentQuestions = [];
+let mode = 'all';
+let pageSize = 10;
+let currentPage = 0;
+let shuffleIndex = 0;
+let shuffleOrder = [];
+let sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+let answerState = {};
+const STORAGE_KEY = 'quiz_progress_v1';
+const STORAGE_VERSION = 1;
+
+// Try loading JSON from same directory; if blocked on file://, fallback to manual picker.
+loadQuestions();
+
+async function loadQuestions() {
+  const mainError = document.getElementById('q-list');
+  const help = document.getElementById('loader-help');
+  if (location.protocol === 'file:') {
+    mainError.innerHTML = '<p style="color:#b45309;padding:1rem">Режим file://: автозавантаження JSON через fetch вимкнено браузером.</p>';
+    help.innerHTML =
+      'Ви відкрили файл локально (<code>file://</code>), тому <code>fetch("questions.json")</code> заблоковано CORS-політикою. ' +
+      'Оберіть JSON вручну нижче або запустіть локальний сервер: ' +
+      '<code>python3 -m http.server 8000</code> і відкрийте ' +
+      '<code>http://localhost:8000/quiz_viewer.html</code>.';
+    document.getElementById('loader-panel').style.display = 'block';
+    return;
+  }
+  try {
+    const res = await fetch('questions.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    applyLoadedData(data);
+  } catch (err) {
+    const reason = err && err.message ? err.message : 'unknown error';
+    mainError.innerHTML = `<p style="color:#dc2626;padding:1rem">Помилка автозавантаження questions.json: ${escHtml(reason)}.</p>`;
+    if (location.protocol === 'file:') {
+      help.innerHTML =
+        'Браузер блокує читання JSON у режимі <code>file://</code>. ' +
+        'Надійний варіант: запустіть локальний сервер у цій папці командою ' +
+        '<code>python3 -m http.server 8000</code> і відкрийте ' +
+        '<code>http://localhost:8000/quiz_viewer.html</code>. ' +
+        'Або завантажте JSON вручну нижче.';
+    } else {
+      help.innerHTML = 'Не вдалося автоматично завантажити <code>questions.json</code>. Оберіть файл вручну або спробуйте ще раз.';
+    }
+    document.getElementById('loader-panel').style.display = 'block';
+  }
+}
+
+function loadFromPickedFile() {
+  const picker = document.getElementById('json-picker');
+  const errEl = document.getElementById('loader-error');
+  errEl.textContent = '';
+  if (!picker.files || !picker.files[0]) {
+    errEl.textContent = 'Спочатку оберіть JSON-файл.';
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(String(reader.result || ''));
+      applyLoadedData(data);
+      document.getElementById('loader-panel').style.display = 'none';
+    } catch (e) {
+      errEl.textContent = 'Некоректний JSON-файл.';
+    }
+  };
+  reader.onerror = () => {
+    errEl.textContent = 'Не вдалося прочитати файл.';
+  };
+  reader.readAsText(picker.files[0], 'utf-8');
+}
+
+function applyLoadedData(data) {
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new Error('JSON has invalid structure');
+  }
+  allData = data;
+  buildSidebar();
+  restoreProgressOrDefault();
+}
+
+function buildSidebar() {
+  const list = document.getElementById('section-list');
+  list.innerHTML = '';
+  allData.forEach((sec, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'section-btn';
+    btn.innerHTML = `${sec.title} <span class="section-count">${sec.questions.length}</span>`;
+    btn.onclick = () => selectSection(i);
+    btn.dataset.i = i;
+    list.appendChild(btn);
+  });
+}
+
+function selectSection(i, options = {}) {
+  const preserveSession = Boolean(options.preserveSession);
+  document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.section-btn')[i]?.classList.add('active');
+  currentSection = allData[i];
+  currentQuestions = shuffle([...currentSection.questions]);
+  document.getElementById('section-title').textContent = currentSection.title;
+  if (!preserveSession) {
+    shuffleIndex = 0;
+    shuffleOrder = shuffle([...Array(currentSection.questions.length).keys()]);
+    sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+    currentPage = 0;
+  }
+  if (mode === 'all') renderAll();
+  else renderSingle();
+  saveProgress();
+}
+
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  const btn = m === 'all'
+    ? document.querySelector('#mode-selector .mode-btn:nth-child(1)')
+    : document.querySelector('#mode-selector .mode-btn:nth-child(2)');
+  if (btn) btn.classList.add('active');
+  document.getElementById('all-view').style.display = m === 'all' ? 'block' : 'none';
+  document.getElementById('single-view').style.display = m === 'shuffle' ? 'block' : 'none';
+  document.getElementById('score-bar').style.display = m === 'shuffle' ? 'flex' : 'none';
+  if (!currentSection) return;
+  if (m === 'all') renderAll();
+  else {
+    shuffleIndex = 0;
+    shuffleOrder = shuffle([...Array(currentSection.questions.length).keys()]);
+    sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+    document.getElementById('final').style.display = 'none';
+    document.getElementById('single-card').style.display = 'block';
+    renderSingle();
+  }
+  saveProgress();
+}
+
+// ---- ALL MODE ----
+function renderAll() {
+  const qs = currentSection.questions;
+  const total = qs.length;
+  const start = currentPage * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const list = document.getElementById('q-list');
+  list.innerHTML = '';
+
+  for (let i = start; i < end; i++) {
+    list.appendChild(buildCard(qs[i], i + 1, total));
+  }
+
+  const navRow = document.getElementById('nav-row');
+  navRow.style.display = total > pageSize ? 'flex' : 'none';
+  document.getElementById('page-info').textContent = `${start + 1}–${end} з ${total}`;
+  document.getElementById('btn-prev').disabled = currentPage === 0;
+  document.getElementById('btn-next').disabled = end >= total;
+  document.getElementById('progress-bar').style.width = ((end / total) * 100) + '%';
+  window.scrollTo(0, 0);
+}
+
+function goPage(dir) {
+  currentPage += dir;
+  renderAll();
+  saveProgress();
+}
+
+function buildCard(q, num, total) {
+  const div = document.createElement('div');
+  div.className = 'q-card';
+  const isMulti = q.options.filter(o => o.weight > 0).length > 1;
+  const inputType = isMulti ? 'checkbox' : 'radio';
+  const hint = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
+
+  div.innerHTML = `
+    <div class="q-meta">Питання ${num} з ${total}</div>
+    <div class="q-text">${escHtml(q.text)}</div>
+    <div class="q-hint">${hint}</div>
+    <div class="options-wrap"></div>
+    <div class="btn-row">
+      <button class="check" onclick="checkCard(this)">Перевірити</button>
+    </div>
+    <div class="q-result-wrap"></div>
+  `;
+
+  const wrap = div.querySelector('.options-wrap');
+  q.options.forEach((opt, oi) => {
+    const row = document.createElement('div');
+    row.className = 'option';
+    const id = `q${q.id}_o${oi}`;
+    row.innerHTML = `<input type="${inputType}" name="q${q.id}" id="${id}" value="${oi}">
+                     <label for="${id}">${escHtml(opt.text)}</label>`;
+    row.addEventListener('click', e => {
+      if (e.target.tagName !== 'INPUT') row.querySelector('input').click();
+    });
+    wrap.appendChild(row);
+  });
+
+  div.dataset.q = JSON.stringify(q);
+  applySavedAnswerState(div, q);
+  return div;
+}
+
+function checkCard(btn) {
+  const card = btn.closest('.q-card');
+  const q = JSON.parse(card.dataset.q);
+  const inputs = card.querySelectorAll('input');
+  const resultWrap = card.querySelector('.q-result-wrap');
+  btn.disabled = true;
+
+  let earned = 0;
+  let maxPossible = q.options.reduce((s, o) => s + Math.max(0, o.weight), 0) || 100;
+
+  inputs.forEach((inp, i) => {
+    const opt = q.options[i];
+    const row = inp.closest('.option');
+    const lbl = row.querySelector('label');
+    inp.disabled = true;
+
+    if (inp.checked) {
+      earned += opt.weight;
+      if (opt.weight === 100) { row.classList.add('res-correct'); lbl.classList.add('lbl-correct'); }
+      else if (opt.weight > 0) { row.classList.add('res-partial'); lbl.classList.add('lbl-partial'); }
+      else { row.classList.add('res-wrong'); lbl.classList.add('lbl-wrong'); }
+    } else {
+      if (opt.weight === 100) row.classList.add('res-missed');
+    }
+  });
+
+  const pct = maxPossible > 0 ? Math.round((earned / maxPossible) * 100) : 0;
+  const cls = pct >= 100 ? 'full' : pct > 0 ? 'partial' : 'zero';
+  const label = pct >= 100 ? '✓ Правильно' : pct > 0 ? `~ Частково (${pct}%)` : '✗ Неправильно';
+  resultWrap.innerHTML = `<div class="q-result ${cls}">${label}</div>`;
+  const selected = Array.from(inputs).map((inp, idx) => inp.checked ? idx : null).filter(v => v !== null);
+  answerState[getQuestionKey(q)] = { selected, pct, graded: true };
+  saveProgress();
+}
+
+// ---- SHUFFLE/TRAINING MODE ----
+function renderSingle() {
+  const total = currentSection.questions.length;
+  if (shuffleIndex >= total) { showFinal(); return; }
+  const qi = shuffleOrder[shuffleIndex];
+  const q = currentSection.questions[qi];
+  const isMulti = q.options.filter(o => o.weight > 0).length > 1;
+
+  document.getElementById('s-meta').textContent = `Питання ${shuffleIndex + 1} з ${total}`;
+  document.getElementById('s-text').textContent = q.text;
+  document.getElementById('s-hint').textContent = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
+  document.getElementById('s-result').innerHTML = '';
+  document.getElementById('s-check-btn').style.display = 'inline-block';
+  document.getElementById('s-check-btn').disabled = false;
+  document.getElementById('s-next-btn').style.display = 'none';
+
+  const wrap = document.getElementById('s-options');
+  wrap.innerHTML = '';
+  q.options.forEach((opt, oi) => {
+    const row = document.createElement('div');
+    row.className = 'option';
+    const id = `sq_o${oi}`;
+    const inputType = isMulti ? 'checkbox' : 'radio';
+    row.innerHTML = `<input type="${inputType}" name="sq" id="${id}" value="${oi}">
+                     <label for="${id}">${escHtml(opt.text)}</label>`;
+    row.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') row.querySelector('input').click(); });
+    wrap.appendChild(row);
+  });
+
+  document.getElementById('s-options').dataset.q = JSON.stringify(q);
+  updateScoreBar();
+  const pct = total > 0 ? (shuffleIndex / total) * 100 : 0;
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+function checkSingle() {
+  const wrap = document.getElementById('s-options');
+  const q = JSON.parse(wrap.dataset.q);
+  const inputs = wrap.querySelectorAll('input');
+  let earned = 0;
+  let maxPossible = q.options.reduce((s, o) => s + Math.max(0, o.weight), 0) || 100;
+
+  inputs.forEach((inp, i) => {
+    const opt = q.options[i];
+    const row = inp.closest('.option');
+    const lbl = row.querySelector('label');
+    inp.disabled = true;
+    if (inp.checked) {
+      earned += opt.weight;
+      if (opt.weight === 100) { row.classList.add('res-correct'); lbl.classList.add('lbl-correct'); }
+      else if (opt.weight > 0) { row.classList.add('res-partial'); lbl.classList.add('lbl-partial'); }
+      else { row.classList.add('res-wrong'); lbl.classList.add('lbl-wrong'); }
+    } else {
+      if (opt.weight === 100) row.classList.add('res-missed');
+    }
+  });
+
+  const pct = maxPossible > 0 ? Math.round((earned / maxPossible) * 100) : 0;
+  if (pct >= 100) sessionStats.correct++;
+  else if (pct > 0) sessionStats.partial++;
+  else sessionStats.wrong++;
+
+  const cls = pct >= 100 ? 'full' : pct > 0 ? 'partial' : 'zero';
+  const label = pct >= 100 ? '✓ Правильно!' : pct > 0 ? `~ Частково правильно (${pct}%)` : '✗ Неправильно';
+  document.getElementById('s-result').innerHTML = `<div class="q-result ${cls}" style="margin-top:0.75rem">${label}</div>`;
+  document.getElementById('s-check-btn').style.display = 'none';
+  document.getElementById('s-next-btn').style.display = 'inline-block';
+  const selected = Array.from(inputs).map((inp, idx) => inp.checked ? idx : null).filter(v => v !== null);
+  answerState[getQuestionKey(q)] = { selected, pct, graded: true };
+  updateScoreBar();
+  saveProgress();
+}
+
+function nextSingle() {
+  shuffleIndex++;
+  renderSingle();
+  saveProgress();
+}
+
+function restartShuffle() {
+  shuffleIndex = 0;
+  shuffleOrder = shuffle([...Array(currentSection.questions.length).keys()]);
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  document.getElementById('final').style.display = 'none';
+  document.getElementById('single-card').style.display = 'block';
+  renderSingle();
+  saveProgress();
+}
+
+function showFinal() {
+  document.getElementById('single-card').style.display = 'none';
+  document.getElementById('final').style.display = 'block';
+  const total = shuffleIndex;
+  const pct = total > 0 ? Math.round((sessionStats.correct / total) * 100) : 0;
+  document.getElementById('final-score').textContent = pct + '%';
+  document.getElementById('final-detail').textContent =
+    `${sessionStats.correct} правильно · ${sessionStats.partial} частково · ${sessionStats.wrong} неправильно із ${total} питань`;
+  document.getElementById('progress-bar').style.width = '100%';
+}
+
+function updateScoreBar() {
+  const done = sessionStats.correct + sessionStats.partial + sessionStats.wrong;
+  const total = currentSection.questions.length;
+  document.getElementById('s-correct').textContent = `${sessionStats.correct} правильно`;
+  document.getElementById('s-partial').textContent = `${sessionStats.partial} частково`;
+  document.getElementById('s-wrong').textContent = `${sessionStats.wrong} неправильно`;
+  document.getElementById('progress-info').textContent = `${done} з ${total}`;
+}
+
+function getQuestionKey(q) {
+  const sec = currentSection ? currentSection.title : 'unknown-section';
+  return `${sec}::${q.id}`;
+}
+
+function applySavedAnswerState(card, q) {
+  const st = answerState[getQuestionKey(q)];
+  if (!st || !st.graded) return;
+  const inputs = card.querySelectorAll('input');
+  const resultWrap = card.querySelector('.q-result-wrap');
+  const checkBtn = card.querySelector('.check');
+  if (checkBtn) checkBtn.disabled = true;
+
+  inputs.forEach((inp, i) => {
+    const opt = q.options[i];
+    const row = inp.closest('.option');
+    const lbl = row.querySelector('label');
+    inp.checked = st.selected.includes(i);
+    inp.disabled = true;
+    if (inp.checked) {
+      if (opt.weight === 100) { row.classList.add('res-correct'); lbl.classList.add('lbl-correct'); }
+      else if (opt.weight > 0) { row.classList.add('res-partial'); lbl.classList.add('lbl-partial'); }
+      else { row.classList.add('res-wrong'); lbl.classList.add('lbl-wrong'); }
+    } else if (opt.weight === 100) {
+      row.classList.add('res-missed');
+    }
+  });
+
+  const cls = st.pct >= 100 ? 'full' : st.pct > 0 ? 'partial' : 'zero';
+  const label = st.pct >= 100 ? '✓ Правильно' : st.pct > 0 ? `~ Частково (${st.pct}%)` : '✗ Неправильно';
+  resultWrap.innerHTML = `<div class="q-result ${cls}">${label}</div>`;
+}
+
+function saveProgress() {
+  if (!allData.length) return;
+  const payload = {
+    v: STORAGE_VERSION,
+    sectionIndex: allData.indexOf(currentSection),
+    mode,
+    currentPage,
+    shuffleIndex,
+    shuffleOrder,
+    sessionStats,
+    answerState
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (_) {
+    // Ignore quota/private mode errors; app remains usable.
+  }
+}
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== STORAGE_VERSION) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function restoreProgressOrDefault() {
+  const saved = loadProgress();
+  if (!saved) {
+    selectSection(0);
+    return;
+  }
+
+  mode = saved.mode === 'shuffle' ? 'shuffle' : 'all';
+  document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+  const modeBtn = mode === 'all'
+    ? document.querySelector('#mode-selector .mode-btn:nth-child(1)')
+    : document.querySelector('#mode-selector .mode-btn:nth-child(2)');
+  if (modeBtn) modeBtn.classList.add('active');
+  document.getElementById('all-view').style.display = mode === 'all' ? 'block' : 'none';
+  document.getElementById('single-view').style.display = mode === 'shuffle' ? 'block' : 'none';
+  document.getElementById('score-bar').style.display = mode === 'shuffle' ? 'flex' : 'none';
+
+  answerState = saved.answerState && typeof saved.answerState === 'object' ? saved.answerState : {};
+  currentPage = Number.isInteger(saved.currentPage) && saved.currentPage >= 0 ? saved.currentPage : 0;
+  shuffleIndex = Number.isInteger(saved.shuffleIndex) && saved.shuffleIndex >= 0 ? saved.shuffleIndex : 0;
+  shuffleOrder = Array.isArray(saved.shuffleOrder) ? saved.shuffleOrder : [];
+  sessionStats = saved.sessionStats && typeof saved.sessionStats === 'object'
+    ? {
+        correct: saved.sessionStats.correct || 0,
+        partial: saved.sessionStats.partial || 0,
+        wrong: saved.sessionStats.wrong || 0,
+        skip: saved.sessionStats.skip || 0
+      }
+    : { correct: 0, partial: 0, wrong: 0, skip: 0 };
+
+  const sectionIndex = Number.isInteger(saved.sectionIndex) && saved.sectionIndex >= 0 && saved.sectionIndex < allData.length
+    ? saved.sectionIndex
+    : 0;
+
+  if (!shuffleOrder.length && allData[sectionIndex]) {
+    shuffleOrder = shuffle([...Array(allData[sectionIndex].questions.length).keys()]);
+  }
+  selectSection(sectionIndex, { preserveSession: true });
+}
+
+function resetProgress() {
+  if (!confirm('Скинути весь збережений прогрес?')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  answerState = {};
+  mode = 'all';
+  currentPage = 0;
+  shuffleIndex = 0;
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  if (allData.length > 0) {
+    selectSection(0);
+    setMode('all');
+  }
+}
+
+function exportProgress() {
+  const payload = loadProgress() || {
+    v: STORAGE_VERSION,
+    sectionIndex: allData.indexOf(currentSection),
+    mode,
+    currentPage,
+    shuffleIndex,
+    shuffleOrder,
+    sessionStats,
+    answerState
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'quiz_progress.json';
+  document.body.appendChild(a);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  a.remove();
+}
+
+function importProgress(evt) {
+  const file = evt.target.files && evt.target.files[0];
+  evt.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result || ''));
+      if (!parsed || parsed.v !== STORAGE_VERSION) throw new Error('bad version');
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
+      if (allData.length > 0) restoreProgressOrDefault();
+      alert('Прогрес імпортовано.');
+    } catch (_) {
+      alert('Не вдалося імпортувати прогрес: некоректний файл.');
+    }
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Initial state
+document.getElementById('all-view').style.display = 'block';
+document.getElementById('single-view').style.display = 'none';
+</script>
+</body>
+</html>
