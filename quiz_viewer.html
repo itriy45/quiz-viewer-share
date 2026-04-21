@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Added compact always-visible section switcher for focus mode/mobile navigation, while preserving fast one-question quiz flow and persistence. -->
+<!-- Updated: Added exam mode with 150-question batches and separate passed-question registry, plus random-N quick training dialog. Storage bumped to v4; sidebar gained an Exam entry; final screen supports "Next batch"; reset now asks whether to clear training, exam, or both. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -28,6 +28,15 @@
   .section-count { font-size: 11px; color: #aaa; margin-left: 4px; }
   .sec-progress-wrap { height: 3px; background: #eee; border-radius: 2px; margin-top: 4px; }
   .sec-progress-fill { height: 100%; border-radius: 2px; }
+  .section-btn.exam-btn {
+    margin: 4px 8px 8px; padding: 10px 12px;
+    border-left: none; border: 1px solid #c7d2fe;
+    border-radius: 8px; background: #eef2ff; color: #3730a3;
+    font-weight: 600;
+  }
+  .section-btn.exam-btn:hover { background: #e0e7ff; }
+  .section-btn.exam-btn.active { background: #c7d2fe; color: #312e81; border-color: #6366f1; }
+  .exam-meta { display: block; font-size: 11px; font-weight: 400; color: #4f46e5; margin-top: 3px; }
   .streak-badge {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 2px 8px; border-radius: 999px; background: #fff7ed;
@@ -281,6 +290,7 @@
       <button class="mode-btn active" onclick="setOrderMode('sequential')">По черзі</button>
       <button class="mode-btn" onclick="setOrderMode('random')">Випадково</button>
       <button class="mode-btn" onclick="setOrderMode('mistakes')" id="mistakes-btn" title="Тільки питання без правильної відповіді">Помилки</button>
+      <button class="mode-btn" onclick="startRandomSubsetPrompt()" title="Випадкова вибірка N питань з усієї бази">Випадкові N</button>
     </div>
     <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
       <button class="show-all" onclick="resetProgress()">Скинути прогрес</button>
@@ -325,7 +335,8 @@
       <p id="final-detail"></p>
       <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:1rem">
         <button class="restart" id="btn-repeat-mistakes" onclick="repeatMistakes()" style="display:none;background:#d97706;border-color:#d97706"></button>
-        <button class="restart" onclick="restartShuffle()">Почати знову</button>
+        <button class="restart" id="btn-next-exam-batch" onclick="nextExamBatch()" style="display:none;background:#4f46e5;border-color:#4f46e5"></button>
+        <button class="restart" id="btn-restart-session" onclick="restartShuffle()">Почати знову</button>
       </div>
     </div>
   </div>
@@ -346,8 +357,13 @@ let sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
 let answerState = {};
 let sectionNav = {};   // { sectionTitle: { currentIndex, questionOrder } }
 let currentStreak = 0;
+// Exam mode: authoritative registry of questions that were answered fully correct
+// during an exam session at least once. Separate from training answerState so
+// that "Скинути прогрес" on training does not wipe the exam coverage.
+let examData = { passedQuestionKeys: [], activeBatch: null };
 const STORAGE_KEY = 'quiz_progress_v1';
-const STORAGE_VERSION = 3;
+const STORAGE_VERSION = 4;
+const EXAM_BATCH_SIZE = 150;
 
 // Try loading JSON from same directory; if blocked on file://, fallback to manual picker.
 loadQuestions();
@@ -425,6 +441,18 @@ function buildSidebar() {
   const list = document.getElementById('section-list');
   list.innerHTML = '';
 
+  // Exam entry (pinned on top). Shows passed / total coverage across the whole bank.
+  const prog = getExamProgress();
+  const examBtn = document.createElement('button');
+  examBtn.className = 'section-btn exam-btn';
+  examBtn.id = 'section-btn-exam';
+  const batchLabel = examData.activeBatch && Array.isArray(examData.activeBatch.keys) && examData.activeBatch.keys.length
+    ? ` · активний пакет: ${examData.activeBatch.keys.length}`
+    : '';
+  examBtn.innerHTML = `Екзамен <span class="exam-meta">${prog.passed} / ${prog.total} зараховано${batchLabel}</span>`;
+  examBtn.onclick = () => selectExam();
+  list.appendChild(examBtn);
+
   // "All sections" virtual entry
   const totalAll = allData.reduce((s, sec) => s + sec.questions.length, 0);
   const allBtn = document.createElement('button');
@@ -460,7 +488,9 @@ function buildSidebar() {
 
 function refreshSidebarActive() {
   if (!currentSection) return;
-  if (currentSection._isAllSections) {
+  if (currentSection._isExamBatch) {
+    document.getElementById('section-btn-exam')?.classList.add('active');
+  } else if (currentSection._isAllSections) {
     document.getElementById('section-btn-all')?.classList.add('active');
   } else {
     const idx = allData.indexOf(currentSection);
@@ -493,6 +523,136 @@ function selectAllSections() {
   saveProgress();
 }
 
+// ===== Exam mode =====
+
+function getAllBankKeys() {
+  const keys = [];
+  allData.forEach(sec => {
+    sec.questions.forEach(q => {
+      keys.push(`${sec.title}::${q.id}`);
+    });
+  });
+  return keys;
+}
+
+function getExamProgress() {
+  const total = getAllBankKeys().length;
+  const passedSet = new Set(examData.passedQuestionKeys);
+  // Only count keys that still exist in the current bank.
+  let passed = 0;
+  getAllBankKeys().forEach(k => { if (passedSet.has(k)) passed++; });
+  return { passed, total, remaining: total - passed };
+}
+
+function buildExamQuestionsFromKeys(keys) {
+  // Map keys back to full question objects with _sectionTitle for stable key lookups.
+  const keyToQuestion = new Map();
+  allData.forEach(sec => {
+    sec.questions.forEach(q => {
+      keyToQuestion.set(`${sec.title}::${q.id}`, { ...q, _sectionTitle: sec.title });
+    });
+  });
+  return keys.map(k => keyToQuestion.get(k)).filter(Boolean);
+}
+
+function createExamBatch() {
+  const passedSet = new Set(examData.passedQuestionKeys);
+  const remaining = getAllBankKeys().filter(k => !passedSet.has(k));
+  if (remaining.length === 0) return null;
+  const shuffled = shuffle(remaining.slice());
+  const batchSize = Math.min(EXAM_BATCH_SIZE, shuffled.length);
+  return { keys: shuffled.slice(0, batchSize), currentIndex: 0 };
+}
+
+function selectExam() {
+  // Reuse an active batch if present; otherwise create a new one.
+  if (!examData.activeBatch || !Array.isArray(examData.activeBatch.keys) || examData.activeBatch.keys.length === 0) {
+    const fresh = createExamBatch();
+    if (!fresh) {
+      const { total } = getExamProgress();
+      alert(`Всю базу (${total} питань) вже пройдено в екзамені. Скиньте прогрес екзамену, щоб почати знову.`);
+      return;
+    }
+    examData.activeBatch = fresh;
+  }
+  resumeExamBatch();
+}
+
+function resumeExamBatch() {
+  const batch = examData.activeBatch;
+  const questions = buildExamQuestionsFromKeys(batch.keys);
+  if (!questions.length) {
+    // Active batch points to questions that no longer exist (bank changed) — rebuild.
+    examData.activeBatch = null;
+    selectExam();
+    return;
+  }
+  currentSection = {
+    title: 'Екзамен',
+    questions,
+    _isExamBatch: true
+  };
+  document.getElementById('section-title').textContent = `Екзамен · пакет з ${questions.length} питань`;
+  questionOrder = [...Array(questions.length).keys()];
+  currentIndex = Number.isInteger(batch.currentIndex) && batch.currentIndex < questions.length ? batch.currentIndex : 0;
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  currentStreak = 0;
+  document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('section-btn-exam')?.classList.add('active');
+  document.getElementById('final').style.display = 'none';
+  document.getElementById('single-card').style.display = 'block';
+  renderCurrentQuestion();
+  closeSidebarOnMobile();
+  saveProgress();
+}
+
+function nextExamBatch() {
+  // Called from final screen to move to a new batch after completing the previous one.
+  examData.activeBatch = null;
+  selectExam();
+}
+
+function markExamPassed(key) {
+  if (!examData.passedQuestionKeys.includes(key)) {
+    examData.passedQuestionKeys.push(key);
+  }
+}
+
+// ===== Random subset training =====
+
+function startRandomSubsetPrompt() {
+  const totalAll = allData.reduce((s, sec) => s + sec.questions.length, 0);
+  const raw = prompt(`Скільки випадкових питань узяти з усієї бази (1–${totalAll})?`, '50');
+  if (raw === null) return;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) {
+    alert('Введіть ціле число більше нуля.');
+    return;
+  }
+  const size = Math.min(n, totalAll);
+  const allFlat = allData.flatMap(sec =>
+    sec.questions.map(q => ({ ...q, _sectionTitle: sec.title }))
+  );
+  const picked = shuffle(allFlat.slice()).slice(0, size);
+  currentSection = {
+    title: `Випадкові ${size}`,
+    questions: picked,
+    _isRandomSubset: true
+  };
+  document.getElementById('section-title').textContent = `Випадкові ${size} з ${allFlat.length}`;
+  questionOrder = [...Array(picked.length).keys()];
+  currentIndex = 0;
+  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  currentStreak = 0;
+  document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('final').style.display = 'none';
+  document.getElementById('single-card').style.display = 'block';
+  updateOrderButtons();
+  renderCurrentQuestion();
+  closeSidebarOnMobile();
+  // Not persisted — this is an ephemeral ad-hoc training session.
+}
+
 function selectSection(i, options = {}) {
   document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
   document.querySelector(`.section-btn[data-i="${i}"]`)?.classList.add('active');
@@ -522,6 +682,11 @@ function setOrderMode(nextMode) {
     updateOrderButtons();
     return;
   }
+  if (currentSection._isExamBatch) {
+    // Order in exam mode is fixed by the generated batch; switching orders would break it.
+    alert('У режимі екзамену порядок питань фіксований. Завершіть пакет або поверніться до розділу.');
+    return;
+  }
   if (orderMode === nextMode) return;
   orderMode = nextMode;
   // "mistakes" mode doesn't clear answers — it filters based on existing answers
@@ -548,9 +713,16 @@ function updateOrderButtons() {
   else if (orderMode === 'mistakes') btn = document.getElementById('mistakes-btn');
   if (btn) btn.classList.add('active');
 
+  // In exam mode, order controls are disabled to keep the batch intact.
+  const selector = document.getElementById('order-selector');
+  const isExam = Boolean(currentSection && currentSection._isExamBatch);
+  if (selector) {
+    selector.querySelectorAll('.mode-btn').forEach(b => { b.disabled = isExam; b.style.opacity = isExam ? '0.5' : ''; });
+  }
+
   // Show live mistake count on the button
   const mistakesBtn = document.getElementById('mistakes-btn');
-  if (mistakesBtn && currentSection) {
+  if (mistakesBtn && currentSection && !isExam) {
     let mistakeCount = 0;
     currentSection.questions.forEach(q => {
       const st = answerState[getQuestionKey(q)];
@@ -577,9 +749,15 @@ function renderCurrentQuestion() {
   const savedMeta = answerState[getQuestionKey(q)];
   const attempts = savedMeta && savedMeta.attempts ? savedMeta.attempts : 0;
   const attemptHint = attempts > 0 ? ` · спроба ${attempts + 1}` : '';
-  const positionLabel = orderMode === 'mistakes'
-    ? `Питання ${currentIndex + 1} з ${questionOrder.length} (помилки)${attemptHint}`
-    : `Питання ${currentIndex + 1} з ${total}${attemptHint}`;
+  let positionLabel;
+  if (currentSection._isExamBatch) {
+    const prog = getExamProgress();
+    positionLabel = `Екзамен · питання ${currentIndex + 1} з ${total} · зараховано ${prog.passed}/${prog.total}${attemptHint}`;
+  } else if (orderMode === 'mistakes') {
+    positionLabel = `Питання ${currentIndex + 1} з ${questionOrder.length} (помилки)${attemptHint}`;
+  } else {
+    positionLabel = `Питання ${currentIndex + 1} з ${total}${attemptHint}`;
+  }
   document.getElementById('s-meta').textContent = positionLabel;
   document.getElementById('s-text').textContent = q.text;
   document.getElementById('s-hint').textContent = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
@@ -679,6 +857,11 @@ function evaluateCurrentAnswer(showPickHint) {
   const prevAttempts = prevState && prevState.attempts ? prevState.attempts : 0;
   answerState[key] = { selected, pct, graded: true, skipped: false, attempts: prevAttempts + 1 };
 
+  // In exam mode: a fully correct answer permanently adds this question to the "зараховано" registry.
+  if (currentSection && currentSection._isExamBatch && pct >= 100) {
+    markExamPassed(key);
+  }
+
   // Streak tracking
   if (pct >= 100) {
     currentStreak++;
@@ -742,8 +925,39 @@ function showFinal() {
   sessionStats = stats;
   const queueLen = questionOrder.length;
   const pct = queueLen > 0 ? Math.round((sessionStats.correct / queueLen) * 100) : 0;
-  const remaining = countRemainingMistakes();
 
+  const repeatBtn = document.getElementById('btn-repeat-mistakes');
+  const nextExamBtn = document.getElementById('btn-next-exam-batch');
+  const restartBtn = document.getElementById('btn-restart-session');
+  repeatBtn.style.display = 'none';
+  nextExamBtn.style.display = 'none';
+  restartBtn.style.display = 'inline-block';
+
+  if (currentSection && currentSection._isExamBatch) {
+    const prog = getExamProgress();
+    document.getElementById('final-title').textContent = prog.remaining === 0
+      ? 'Всю базу пройдено! 🎉'
+      : 'Пакет завершено';
+    const batchPassed = sessionStats.correct;
+    const batchSize = queueLen;
+    document.getElementById('final-detail').textContent = prog.remaining === 0
+      ? `Ви зарахували всі ${prog.total} питань бази. Можна скинути прогрес екзамену, щоб пройти все знову.`
+      : `Пакет: ${batchPassed} з ${batchSize} на 100%. У базі залишилось ${prog.remaining} незарахованих питань.`;
+    if (prog.remaining > 0) {
+      nextExamBtn.style.display = 'inline-block';
+      nextExamBtn.textContent = `Наступний пакет (${Math.min(EXAM_BATCH_SIZE, prog.remaining)})`;
+      restartBtn.style.display = 'none';
+    }
+    // Clear the active batch — starting again creates a fresh one from remaining.
+    examData.activeBatch = null;
+    document.getElementById('final-score').textContent = pct + '%';
+    document.getElementById('progress-bar').style.width = '100%';
+    buildSidebar();
+    saveProgress();
+    return;
+  }
+
+  const remaining = countRemainingMistakes();
   if (orderMode === 'mistakes') {
     document.getElementById('final-title').textContent =
       remaining === 0 ? 'Всі помилки виправлено! 🎉' : 'Сеанс помилок завершено';
@@ -759,13 +973,9 @@ function showFinal() {
   document.getElementById('final-score').textContent = pct + '%';
   document.getElementById('progress-bar').style.width = '100%';
 
-  // Show "Practice mistakes" button whenever there are remaining mistakes
-  const repeatBtn = document.getElementById('btn-repeat-mistakes');
   if (remaining > 0) {
     repeatBtn.style.display = 'inline-block';
     repeatBtn.textContent = `Тренувати помилки (${remaining})`;
-  } else {
-    repeatBtn.style.display = 'none';
   }
 }
 
@@ -849,19 +1059,30 @@ function applySavedAnswerState(card, q) {
 function saveProgress() {
   if (!allData.length) return;
   const isAllSections = Boolean(currentSection && currentSection._isAllSections);
-  // Snapshot current navigation position for this section
-  if (currentSection) {
+  const isExam = Boolean(currentSection && currentSection._isExamBatch);
+  const isRandomSubset = Boolean(currentSection && currentSection._isRandomSubset);
+  // Snapshot current navigation position for this section (skip exam and ephemeral random subsets)
+  if (currentSection && !isExam && !isRandomSubset) {
     const navKey = isAllSections ? '__all__' : currentSection.title;
     sectionNav[navKey] = { currentIndex, questionOrder };
   }
+  // Exam batch: persist inside examData.activeBatch so training nav is untouched
+  if (isExam && examData.activeBatch) {
+    examData.activeBatch.currentIndex = currentIndex;
+  }
   const payload = {
     v: STORAGE_VERSION,
-    lastSectionIndex: isAllSections ? -1 : allData.indexOf(currentSection),
+    lastSectionIndex: (isAllSections || isExam) ? -1 : allData.indexOf(currentSection),
     isAllSections,
+    isExam,
     orderMode,
     sessionStats,
     answerState,
-    sectionNav
+    sectionNav,
+    exam: {
+      passedQuestionKeys: examData.passedQuestionKeys,
+      activeBatch: examData.activeBatch
+    }
   };
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -876,7 +1097,8 @@ function loadProgress() {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed) return null;
-    if (parsed.v === 2) return migrateV2(parsed);
+    if (parsed.v === 2) return migrateToLatest(migrateV2(parsed));
+    if (parsed.v === 3) return migrateToLatest(parsed);
     if (parsed.v !== STORAGE_VERSION) return null;
     return parsed;
   } catch (_) {
@@ -885,7 +1107,7 @@ function loadProgress() {
 }
 
 function migrateV2(old) {
-  // Preserve all answers; reconstruct sectionNav from the single saved position
+  // v2 → v3: reconstruct sectionNav from the single saved position
   const nav = {};
   const secIdx = old.sectionIndex;
   if (Number.isInteger(secIdx) && secIdx >= 0 && allData[secIdx]) {
@@ -895,13 +1117,28 @@ function migrateV2(old) {
     };
   }
   return {
-    v: STORAGE_VERSION,
+    v: 3,
     lastSectionIndex: secIdx,
     isAllSections: Boolean(old.isAllSections),
     orderMode: old.orderMode || 'sequential',
     sessionStats: old.sessionStats || { correct: 0, partial: 0, wrong: 0, skip: 0 },
     answerState: old.answerState || {},
     sectionNav: nav
+  };
+}
+
+function migrateToLatest(parsed) {
+  // v3 → v4: add empty exam bucket
+  return {
+    ...parsed,
+    v: STORAGE_VERSION,
+    isExam: Boolean(parsed.isExam),
+    exam: parsed.exam && typeof parsed.exam === 'object'
+      ? {
+          passedQuestionKeys: Array.isArray(parsed.exam.passedQuestionKeys) ? parsed.exam.passedQuestionKeys : [],
+          activeBatch: parsed.exam.activeBatch || null
+        }
+      : { passedQuestionKeys: [], activeBatch: null }
   };
 }
 
@@ -916,6 +1153,12 @@ function restoreProgressOrDefault() {
   orderMode = validModes.includes(saved.orderMode) ? saved.orderMode : 'sequential';
   answerState = saved.answerState && typeof saved.answerState === 'object' ? saved.answerState : {};
   sectionNav  = saved.sectionNav  && typeof saved.sectionNav  === 'object' ? saved.sectionNav  : {};
+  examData = saved.exam && typeof saved.exam === 'object'
+    ? {
+        passedQuestionKeys: Array.isArray(saved.exam.passedQuestionKeys) ? saved.exam.passedQuestionKeys : [],
+        activeBatch: saved.exam.activeBatch || null
+      }
+    : { passedQuestionKeys: [], activeBatch: null };
   buildSidebar(); // rebuild now that answerState is loaded so progress bars show correctly
   sessionStats = saved.sessionStats && typeof saved.sessionStats === 'object'
     ? {
@@ -925,6 +1168,11 @@ function restoreProgressOrDefault() {
         skip:    saved.sessionStats.skip    || 0
       }
     : { correct: 0, partial: 0, wrong: 0, skip: 0 };
+
+  if (saved.isExam && examData.activeBatch && Array.isArray(examData.activeBatch.keys) && examData.activeBatch.keys.length) {
+    resumeExamBatch();
+    return;
+  }
 
   if (saved.isAllSections) {
     const allQuestions = allData.flatMap(sec =>
@@ -956,17 +1204,40 @@ function restoreProgressOrDefault() {
 }
 
 function resetProgress() {
-  if (!confirm('Скинути весь збережений прогрес?')) return;
-  localStorage.removeItem(STORAGE_KEY);
-  answerState = {};
-  sectionNav = {};
-  orderMode = 'sequential';
-  currentIndex = 0;
-  currentStreak = 0;
-  sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  // 1 = тренування, 2 = екзамен, 3 = все. Порожньо / скасування — нічого не робимо.
+  const choice = prompt(
+    'Що скинути?\n  1 — тільки тренування (answers/помилки/навігація)\n  2 — тільки екзамен (зараховані питання + активний пакет)\n  3 — все\n\nВведіть 1, 2 або 3:',
+    '1'
+  );
+  if (choice === null) return;
+  const c = String(choice).trim();
+  if (c !== '1' && c !== '2' && c !== '3') {
+    alert('Скасовано: неочікуване значення.');
+    return;
+  }
+
+  if (c === '1' || c === '3') {
+    answerState = {};
+    sectionNav = {};
+    orderMode = 'sequential';
+    currentIndex = 0;
+    currentStreak = 0;
+    sessionStats = { correct: 0, partial: 0, wrong: 0, skip: 0 };
+  }
+  if (c === '2' || c === '3') {
+    examData = { passedQuestionKeys: [], activeBatch: null };
+  }
+
+  saveProgress();
   if (allData.length > 0) {
-    selectSection(0);
-    updateOrderButtons();
+    if (c === '2' && currentSection && !currentSection._isExamBatch) {
+      // Training is untouched — just refresh sidebar counters and keep current view.
+      buildSidebar();
+      refreshSidebarActive();
+    } else {
+      selectSection(0);
+      updateOrderButtons();
+    }
   }
 }
 
@@ -998,9 +1269,11 @@ function importProgress(evt) {
   reader.onload = () => {
     try {
       const parsed = JSON.parse(String(reader.result || ''));
-      if (!parsed || (parsed.v !== STORAGE_VERSION && parsed.v !== 2)) throw new Error('bad version');
-      // Migrate v2 exports on import as well
-      const toStore = parsed.v === 2 ? migrateV2(parsed) : parsed;
+      if (!parsed || ![2, 3, STORAGE_VERSION].includes(parsed.v)) throw new Error('bad version');
+      // Chain migrations so older exports gain the exam bucket automatically.
+      let toStore = parsed;
+      if (toStore.v === 2) toStore = migrateV2(toStore);
+      if (toStore.v === 3) toStore = migrateToLatest(toStore);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toStore));
       if (allData.length > 0) restoreProgressOrDefault();
       alert('Прогрес імпортовано.');
