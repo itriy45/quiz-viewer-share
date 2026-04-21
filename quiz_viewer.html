@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Exam mode now works as a blind mock test — selections are saved to exam.pendingAnswers without inline grading, and correctness is revealed only on submission. finishExam() grades the whole batch at once, updates passedQuestionKeys for full-correct answers, and switches to a review screen that lists mistakes with user vs. correct options side by side. Added "Повторити цей пакет" and "Вийти з екзамену" actions; batches of 150 questions, random-N training, and v4 storage migration preserved. -->
+<!-- Updated: Exam review now offers a focused "Пропрацювати помилки" action that shrinks the active batch to just the wrong/partial/skipped questions (resetting their pending answers) so the user can retake only the misses as another blind mini-exam. Kept prior blind mock-test flow: hidden inline grading, submission-time finishExam, review screen with mistakes + correct options, and the "Повторити цей пакет" / "Наступний пакет" / "Вийти з екзамену" actions on top of the 150-question batch engine and v4 storage. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -641,6 +641,26 @@ function retryCurrentExamBatch() {
   resumeExamBatch();
 }
 
+function retryExamMistakesOnly() {
+  // Build a focused batch containing only the questions the user missed in this review.
+  if (!currentSection || !currentSection._isExamBatch) return;
+  const mistakeKeys = currentSection.questions
+    .filter(q => {
+      const st = answerState[getQuestionKey(q)];
+      return !st || !st.graded || st.skipped || st.pct < 100;
+    })
+    .map(q => getQuestionKey(q));
+  if (mistakeKeys.length === 0) {
+    alert('У цьому пакеті немає помилок — нічого виправляти.');
+    return;
+  }
+  // Shrink the active batch to just the mistakes and reset their pending answers.
+  examData.activeBatch = { keys: mistakeKeys, currentIndex: 0 };
+  mistakeKeys.forEach(k => { delete examPendingAnswers[k]; });
+  examMode = 'taking';
+  resumeExamBatch();
+}
+
 function markExamPassed(key) {
   if (!examData.passedQuestionKeys.includes(key)) {
     examData.passedQuestionKeys.push(key);
@@ -1074,11 +1094,13 @@ function showFinal() {
   const nextExamBtn = document.getElementById('btn-next-exam-batch');
   const restartBtn = document.getElementById('btn-restart-session');
   const retryBatchBtn = document.getElementById('btn-retry-exam-batch');
+  const retryMistakesBtn = document.getElementById('btn-retry-exam-mistakes');
   const exitExamBtn = document.getElementById('btn-exit-exam');
   const reviewList = document.getElementById('exam-review-list');
   repeatBtn.style.display = 'none';
   nextExamBtn.style.display = 'none';
   if (retryBatchBtn) retryBatchBtn.style.display = 'none';
+  if (retryMistakesBtn) retryMistakesBtn.style.display = 'none';
   if (exitExamBtn) exitExamBtn.style.display = 'none';
   if (reviewList) reviewList.innerHTML = '';
   restartBtn.style.display = 'inline-block';
@@ -1138,7 +1160,16 @@ function renderExamReview(queueLen, pct, nextExamBtn, restartBtn) {
   document.getElementById('final-score').textContent = pct + '%';
   document.getElementById('progress-bar').style.width = '100%';
 
-  // Buttons: retry same batch, go to next batch, or exit.
+  // Buttons: practice only mistakes, retry same batch, go to next batch, or exit.
+  const mistakesCount = items.filter(it => it.skipped || it.score < 100).length;
+  const retryMistakesBtn = ensureExamReviewButton('btn-retry-exam-mistakes', 'retryExamMistakesOnly()', '#b45309');
+  if (mistakesCount > 0) {
+    retryMistakesBtn.textContent = `Пропрацювати помилки (${mistakesCount})`;
+    retryMistakesBtn.style.display = 'inline-block';
+  } else {
+    retryMistakesBtn.style.display = 'none';
+  }
+
   const retryBatchBtn = ensureExamReviewButton('btn-retry-exam-batch', 'retryCurrentExamBatch()', '#d97706');
   retryBatchBtn.textContent = `Повторити цей пакет (${queueLen})`;
   retryBatchBtn.style.display = 'inline-block';
