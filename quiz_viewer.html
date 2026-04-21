@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Added exam mode with 150-question batches and separate passed-question registry, plus random-N quick training dialog. Storage bumped to v4; sidebar gained an Exam entry; final screen supports "Next batch"; reset now asks whether to clear training, exam, or both. -->
+<!-- Updated: Exam mode now works as a blind mock test — selections are saved to exam.pendingAnswers without inline grading, and correctness is revealed only on submission. finishExam() grades the whole batch at once, updates passedQuestionKeys for full-correct answers, and switches to a review screen that lists mistakes with user vs. correct options side by side. Added "Повторити цей пакет" and "Вийти з екзамену" actions; batches of 150 questions, random-N training, and v4 storage migration preserved. -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -361,6 +361,11 @@ let currentStreak = 0;
 // during an exam session at least once. Separate from training answerState so
 // that "Скинути прогрес" on training does not wipe the exam coverage.
 let examData = { passedQuestionKeys: [], activeBatch: null };
+// Blind mock-test state: answers are hidden until the whole batch is submitted.
+// examMode === 'taking'  → user picks answers, no feedback.
+// examMode === 'review'  → batch was submitted, mistakes and correct answers revealed.
+let examPendingAnswers = {}; // key (sectionTitle::id) -> [selected option indices]
+let examMode = 'taking';
 const STORAGE_KEY = 'quiz_progress_v1';
 const STORAGE_VERSION = 4;
 const EXAM_BATCH_SIZE = 150;
@@ -574,6 +579,8 @@ function selectExam() {
       return;
     }
     examData.activeBatch = fresh;
+    examPendingAnswers = {};
+    examMode = 'taking';
   }
   resumeExamBatch();
 }
@@ -584,6 +591,8 @@ function resumeExamBatch() {
   if (!questions.length) {
     // Active batch points to questions that no longer exist (bank changed) — rebuild.
     examData.activeBatch = null;
+    examPendingAnswers = {};
+    examMode = 'taking';
     selectExam();
     return;
   }
@@ -599,6 +608,12 @@ function resumeExamBatch() {
   currentStreak = 0;
   document.querySelectorAll('.section-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('section-btn-exam')?.classList.add('active');
+  if (examMode === 'review') {
+    // Land directly on the review screen without re-grading (answerState already holds results).
+    showFinal();
+    closeSidebarOnMobile();
+    return;
+  }
   document.getElementById('final').style.display = 'none';
   document.getElementById('single-card').style.display = 'block';
   renderCurrentQuestion();
@@ -609,13 +624,68 @@ function resumeExamBatch() {
 function nextExamBatch() {
   // Called from final screen to move to a new batch after completing the previous one.
   examData.activeBatch = null;
+  examPendingAnswers = {};
+  examMode = 'taking';
   selectExam();
+}
+
+function retryCurrentExamBatch() {
+  // Repeat the same batch with answers wiped, useful as a pure mock-test retry.
+  if (!examData.activeBatch || !Array.isArray(examData.activeBatch.keys) || !examData.activeBatch.keys.length) {
+    nextExamBatch();
+    return;
+  }
+  examPendingAnswers = {};
+  examData.activeBatch.currentIndex = 0;
+  examMode = 'taking';
+  resumeExamBatch();
 }
 
 function markExamPassed(key) {
   if (!examData.passedQuestionKeys.includes(key)) {
     examData.passedQuestionKeys.push(key);
   }
+}
+
+function gradeSelectionForQuestion(q, selectedIndices) {
+  // Mirrors the math in evaluateCurrentAnswer so scoring stays consistent.
+  const maxPossible = q.options.reduce((s, o) => s + Math.max(0, o.weight), 0) || 100;
+  let earned = 0;
+  (selectedIndices || []).forEach(i => {
+    const opt = q.options[i];
+    if (opt) earned += opt.weight;
+  });
+  return maxPossible > 0 ? Math.round((earned / maxPossible) * 100) : 0;
+}
+
+function finishExam() {
+  // Grade every question in the active batch from examPendingAnswers,
+  // write results to answerState, update passedQuestionKeys, switch to review.
+  if (!currentSection || !currentSection._isExamBatch) return;
+  currentSection.questions.forEach(q => {
+    const key = getQuestionKey(q);
+    const pending = examPendingAnswers[key];
+    const hasSelection = Array.isArray(pending) && pending.length > 0;
+    if (!hasSelection) {
+      answerState[key] = { selected: [], pct: 0, graded: true, skipped: true, attempts: (answerState[key]?.attempts || 0) + 1 };
+      return;
+    }
+    const pct = gradeSelectionForQuestion(q, pending);
+    answerState[key] = { selected: pending.slice(), pct, graded: true, skipped: false, attempts: (answerState[key]?.attempts || 0) + 1 };
+    if (pct >= 100) markExamPassed(key);
+  });
+  examMode = 'review';
+  showFinal();
+  saveProgress();
+}
+
+function exitExamReview() {
+  // Close current review and return to the default section.
+  examData.activeBatch = null;
+  examPendingAnswers = {};
+  examMode = 'taking';
+  if (allData.length > 0) selectSection(0);
+  saveProgress();
 }
 
 // ===== Random subset training =====
@@ -740,6 +810,8 @@ function renderCurrentQuestion() {
   const isMulti = q.options.filter(o => o.weight > 0).length > 1;
   const key = getQuestionKey(q);
   const saved = answerState[key] || null;
+  const isExamTaking = Boolean(currentSection._isExamBatch) && examMode === 'taking';
+  const pending = examPendingAnswers[key] || [];
 
   document.getElementById('single-view').style.display = 'block';
   document.getElementById('nav-row').style.display = 'flex';
@@ -748,11 +820,15 @@ function renderCurrentQuestion() {
   document.getElementById('final').style.display = 'none';
   const savedMeta = answerState[getQuestionKey(q)];
   const attempts = savedMeta && savedMeta.attempts ? savedMeta.attempts : 0;
-  const attemptHint = attempts > 0 ? ` · спроба ${attempts + 1}` : '';
+  const attemptHint = attempts > 0 && !isExamTaking ? ` · спроба ${attempts + 1}` : '';
   let positionLabel;
   if (currentSection._isExamBatch) {
     const prog = getExamProgress();
-    positionLabel = `Екзамен · питання ${currentIndex + 1} з ${total} · зараховано ${prog.passed}/${prog.total}${attemptHint}`;
+    const answered = Object.keys(examPendingAnswers).filter(k => {
+      const sel = examPendingAnswers[k];
+      return Array.isArray(sel) && sel.length > 0;
+    }).length;
+    positionLabel = `Екзамен · питання ${currentIndex + 1} з ${total} · відповідей ${answered}/${total} · зараховано ${prog.passed}/${prog.total}${attemptHint}`;
   } else if (orderMode === 'mistakes') {
     positionLabel = `Питання ${currentIndex + 1} з ${questionOrder.length} (помилки)${attemptHint}`;
   } else {
@@ -760,7 +836,10 @@ function renderCurrentQuestion() {
   }
   document.getElementById('s-meta').textContent = positionLabel;
   document.getElementById('s-text').textContent = q.text;
-  document.getElementById('s-hint').textContent = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
+  const hintBase = isMulti ? 'Оберіть всі правильні відповіді' : 'Оберіть одну відповідь';
+  document.getElementById('s-hint').textContent = isExamTaking
+    ? `${hintBase} · результат буде показано лише після завершення пакета`
+    : hintBase;
   document.getElementById('s-result').innerHTML = '';
 
   const wrap = document.getElementById('s-options');
@@ -770,12 +849,19 @@ function renderCurrentQuestion() {
     row.className = 'option';
     const id = `sq_o${oi}`;
     const inputType = isMulti ? 'checkbox' : 'radio';
-    row.innerHTML = `<input type="${inputType}" name="sq" id="${id}" value="${oi}">
+    const isChecked = isExamTaking ? pending.includes(oi) : false;
+    row.innerHTML = `<input type="${inputType}" name="sq" id="${id}" value="${oi}"${isChecked ? ' checked' : ''}>
                      <label for="${id}">${escHtml(opt.text)}</label>`;
     row.addEventListener('click', e => { if (e.target.tagName !== 'INPUT') row.querySelector('input').click(); });
-    row.querySelector('input').addEventListener('change', () => {
-      evaluateCurrentAnswer(false);
-    });
+    if (isExamTaking) {
+      row.querySelector('input').addEventListener('change', () => {
+        storeExamPendingFromUI(q);
+      });
+    } else {
+      row.querySelector('input').addEventListener('change', () => {
+        evaluateCurrentAnswer(false);
+      });
+    }
     wrap.appendChild(row);
   });
 
@@ -791,9 +877,17 @@ function renderCurrentQuestion() {
   inlineNextBtn.style.display = 'none';
   checkBtn.textContent = 'Перевірити';
 
-  if (saved && saved.graded) {
-    applySavedAnswerState(wrap, q);
-    checkBtn.textContent = 'Перевірити ще раз';
+  if (isExamTaking) {
+    // Blind mock-test UX: hide grading, always offer "Next / Finish" and "Skip".
+    checkBtn.style.display = 'none';
+    skipBtn.style.display = 'inline-block';
+    skipBtn.textContent = 'Пропустити';
+  } else {
+    checkBtn.style.display = 'inline-block';
+    if (saved && saved.graded) {
+      applySavedAnswerState(wrap, q);
+      checkBtn.textContent = 'Перевірити ще раз';
+    }
   }
 
   // Single call after all state is applied
@@ -805,7 +899,34 @@ function renderCurrentQuestion() {
   window.scrollTo(0, 0);
 }
 
+function storeExamPendingFromUI(q) {
+  const wrap = document.getElementById('s-options');
+  const inputs = wrap.querySelectorAll('input');
+  const selected = Array.from(inputs).map((inp, idx) => inp.checked ? idx : null).filter(v => v !== null);
+  examPendingAnswers[getQuestionKey(q)] = selected;
+  // Refresh header counter ("відповідей X/N") without full re-render.
+  updateExamTakingMeta();
+  saveProgress();
+}
+
+function updateExamTakingMeta() {
+  if (!currentSection || !currentSection._isExamBatch || examMode !== 'taking') return;
+  const total = currentSection.questions.length;
+  const prog = getExamProgress();
+  const answered = Object.keys(examPendingAnswers).filter(k => {
+    const sel = examPendingAnswers[k];
+    return Array.isArray(sel) && sel.length > 0;
+  }).length;
+  document.getElementById('s-meta').textContent =
+    `Екзамен · питання ${currentIndex + 1} з ${total} · відповідей ${answered}/${total} · зараховано ${prog.passed}/${prog.total}`;
+}
+
 function checkCurrent() {
+  // Safety net: in exam taking mode grading is blocked; just move on.
+  if (currentSection && currentSection._isExamBatch && examMode === 'taking') {
+    goToQuestion(1);
+    return;
+  }
   evaluateCurrentAnswer(true);
 }
 
@@ -814,6 +935,13 @@ function evaluateCurrentAnswer(showPickHint) {
   const q = JSON.parse(wrap.dataset.q);
   const inputs = wrap.querySelectorAll('input');
   const picked = Array.from(inputs).some(inp => inp.checked);
+
+  // In exam-taking mode, never grade inline — just persist the pending selection.
+  if (currentSection && currentSection._isExamBatch && examMode === 'taking') {
+    storeExamPendingFromUI(q);
+    return;
+  }
+
   if (!picked) {
     if (showPickHint) {
       document.getElementById('s-result').innerHTML = '<div class="q-result zero" style="margin-top:0.75rem">Оберіть хоча б один варіант або натисніть "Пропустити".</div>';
@@ -879,6 +1007,13 @@ function evaluateCurrentAnswer(showPickHint) {
 
 function skipCurrent() {
   const q = JSON.parse(document.getElementById('s-options').dataset.q);
+  // Exam taking: mark as "not answered" by clearing any pending selection, then move on.
+  if (currentSection && currentSection._isExamBatch && examMode === 'taking') {
+    delete examPendingAnswers[getQuestionKey(q)];
+    saveProgress();
+    goToQuestion(1);
+    return;
+  }
   const existing = answerState[getQuestionKey(q)];
   if (!existing || !existing.graded) {
     answerState[getQuestionKey(q)] = { selected: [], pct: 0, graded: true, skipped: true };
@@ -894,6 +1029,15 @@ function skipCurrent() {
 function goToQuestion(dir) {
   const total = currentSection.questions.length;
   if (dir > 0 && currentIndex >= total - 1) {
+    // Exam taking: finishing a batch triggers grading + review screen.
+    if (currentSection._isExamBatch && examMode === 'taking') {
+      const hasAnyAnswer = Object.values(examPendingAnswers).some(sel => Array.isArray(sel) && sel.length > 0);
+      if (!hasAnyAnswer) {
+        if (!confirm('Ви не дали жодної відповіді. Завершити екзамен все одно?')) return;
+      }
+      finishExam();
+      return;
+    }
     showFinal();
     saveProgress();
     return;
@@ -929,31 +1073,18 @@ function showFinal() {
   const repeatBtn = document.getElementById('btn-repeat-mistakes');
   const nextExamBtn = document.getElementById('btn-next-exam-batch');
   const restartBtn = document.getElementById('btn-restart-session');
+  const retryBatchBtn = document.getElementById('btn-retry-exam-batch');
+  const exitExamBtn = document.getElementById('btn-exit-exam');
+  const reviewList = document.getElementById('exam-review-list');
   repeatBtn.style.display = 'none';
   nextExamBtn.style.display = 'none';
+  if (retryBatchBtn) retryBatchBtn.style.display = 'none';
+  if (exitExamBtn) exitExamBtn.style.display = 'none';
+  if (reviewList) reviewList.innerHTML = '';
   restartBtn.style.display = 'inline-block';
 
   if (currentSection && currentSection._isExamBatch) {
-    const prog = getExamProgress();
-    document.getElementById('final-title').textContent = prog.remaining === 0
-      ? 'Всю базу пройдено! 🎉'
-      : 'Пакет завершено';
-    const batchPassed = sessionStats.correct;
-    const batchSize = queueLen;
-    document.getElementById('final-detail').textContent = prog.remaining === 0
-      ? `Ви зарахували всі ${prog.total} питань бази. Можна скинути прогрес екзамену, щоб пройти все знову.`
-      : `Пакет: ${batchPassed} з ${batchSize} на 100%. У базі залишилось ${prog.remaining} незарахованих питань.`;
-    if (prog.remaining > 0) {
-      nextExamBtn.style.display = 'inline-block';
-      nextExamBtn.textContent = `Наступний пакет (${Math.min(EXAM_BATCH_SIZE, prog.remaining)})`;
-      restartBtn.style.display = 'none';
-    }
-    // Clear the active batch — starting again creates a fresh one from remaining.
-    examData.activeBatch = null;
-    document.getElementById('final-score').textContent = pct + '%';
-    document.getElementById('progress-bar').style.width = '100%';
-    buildSidebar();
-    saveProgress();
+    renderExamReview(queueLen, pct, nextExamBtn, restartBtn);
     return;
   }
 
@@ -979,6 +1110,122 @@ function showFinal() {
   }
 }
 
+function renderExamReview(queueLen, pct, nextExamBtn, restartBtn) {
+  const prog = getExamProgress();
+  let correctCount = 0, partialCount = 0, wrongCount = 0, skipCount = 0;
+  const items = [];
+  currentSection.questions.forEach((q, idx) => {
+    const key = getQuestionKey(q);
+    const st = answerState[key];
+    const selected = Array.isArray(st?.selected) ? st.selected : [];
+    const skipped = Boolean(st?.skipped) || selected.length === 0;
+    const score = st?.pct ?? 0;
+    if (skipped) skipCount++;
+    else if (score >= 100) correctCount++;
+    else if (score > 0) partialCount++;
+    else wrongCount++;
+    items.push({ idx, q, selected, skipped, score });
+  });
+
+  document.getElementById('final-title').textContent = prog.remaining === 0
+    ? 'Всю базу пройдено! 🎉'
+    : 'Екзамен завершено';
+  document.getElementById('final-detail').textContent =
+    `${correctCount} правильно · ${partialCount} частково · ${wrongCount} неправильно · ${skipCount} без відповіді (з ${queueLen} питань). ` +
+    (prog.remaining === 0
+      ? `Ви зарахували всі ${prog.total} питань бази.`
+      : `У базі залишилось ${prog.remaining} незарахованих питань.`);
+  document.getElementById('final-score').textContent = pct + '%';
+  document.getElementById('progress-bar').style.width = '100%';
+
+  // Buttons: retry same batch, go to next batch, or exit.
+  const retryBatchBtn = ensureExamReviewButton('btn-retry-exam-batch', 'retryCurrentExamBatch()', '#d97706');
+  retryBatchBtn.textContent = `Повторити цей пакет (${queueLen})`;
+  retryBatchBtn.style.display = 'inline-block';
+
+  const exitBtn = ensureExamReviewButton('btn-exit-exam', 'exitExamReview()', '#6b7280');
+  exitBtn.textContent = 'Вийти з екзамену';
+  exitBtn.style.display = 'inline-block';
+
+  if (prog.remaining > 0) {
+    nextExamBtn.style.display = 'inline-block';
+    nextExamBtn.textContent = `Наступний пакет (${Math.min(EXAM_BATCH_SIZE, prog.remaining)})`;
+  }
+  restartBtn.style.display = 'none';
+
+  // Mistakes review panel: list wrong/partial/skipped questions with user + correct options.
+  const reviewMount = ensureReviewMountPoint();
+  const mistakes = items.filter(it => it.skipped || it.score < 100);
+  if (mistakes.length === 0) {
+    reviewMount.innerHTML = '<p style="margin-top:1rem;color:#16a34a;font-size:14px">Жодної помилки — ідеальний результат у цьому пакеті.</p>';
+  } else {
+    reviewMount.innerHTML =
+      `<h3 style="margin:1.5rem 0 0.75rem;font-size:16px;color:#111;text-align:left">Розбір помилок (${mistakes.length})</h3>` +
+      mistakes.map(it => renderReviewItemHtml(it)).join('');
+  }
+
+  buildSidebar();
+  saveProgress();
+}
+
+function ensureExamReviewButton(id, onclickExpr, bg) {
+  let btn = document.getElementById(id);
+  if (btn) return btn;
+  btn = document.createElement('button');
+  btn.className = 'restart';
+  btn.id = id;
+  btn.setAttribute('onclick', onclickExpr);
+  btn.style.display = 'none';
+  btn.style.background = bg;
+  btn.style.borderColor = bg;
+  // Insert near the other final-screen buttons.
+  const anchor = document.getElementById('btn-next-exam-batch');
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(btn, anchor.nextSibling);
+  return btn;
+}
+
+function ensureReviewMountPoint() {
+  let el = document.getElementById('exam-review-list');
+  if (el) { el.innerHTML = ''; return el; }
+  el = document.createElement('div');
+  el.id = 'exam-review-list';
+  el.style.textAlign = 'left';
+  el.style.maxWidth = '720px';
+  el.style.margin = '1rem auto 0';
+  document.getElementById('final').appendChild(el);
+  return el;
+}
+
+function renderReviewItemHtml(it) {
+  const { q, selected, skipped, score, idx } = it;
+  const stateBadge = skipped
+    ? '<span class="q-result partial">Без відповіді</span>'
+    : score === 0
+      ? '<span class="q-result zero">Неправильно</span>'
+      : `<span class="q-result partial">Частково (${score}%)</span>`;
+  const optsHtml = q.options.map((opt, oi) => {
+    const picked = selected.includes(oi);
+    const isCorrect = opt.weight === 100;
+    const isPartial = opt.weight > 0 && opt.weight < 100;
+    const classes = ['option'];
+    const lblClasses = [];
+    if (picked && isCorrect) { classes.push('res-correct'); lblClasses.push('lbl-correct'); }
+    else if (picked && isPartial) { classes.push('res-partial'); lblClasses.push('lbl-partial'); }
+    else if (picked) { classes.push('res-wrong'); lblClasses.push('lbl-wrong'); }
+    else if (isCorrect) { classes.push('res-missed'); lblClasses.push('lbl-correct'); }
+    const marker = picked ? '✓ ваш вибір' : (isCorrect ? '★ правильна' : '');
+    return `<div class="${classes.join(' ')}" style="cursor:default">
+        <label class="${lblClasses.join(' ')}">${escHtml(opt.text)}${marker ? ` <small style="color:#666;font-weight:400">· ${marker}</small>` : ''}</label>
+      </div>`;
+  }).join('');
+  return `<div class="q-card" style="text-align:left;margin-bottom:0.75rem">
+      <div class="q-meta">Питання ${idx + 1} · ${escHtml(q._sectionTitle || '')}</div>
+      <div class="big-q" style="margin-bottom:0.5rem">${escHtml(q.text)}</div>
+      <div style="margin-bottom:0.5rem">${stateBadge}</div>
+      ${optsHtml}
+    </div>`;
+}
+
 function countRemainingMistakes() {
   if (!currentSection) return 0;
   return currentSection.questions.filter(q => {
@@ -1002,9 +1249,24 @@ function repeatMistakes() {
 }
 
 function updateScoreBar() {
+  const total = currentSection.questions.length;
+  // Exam-taking: hide grading counters; show only answered-count progress.
+  if (currentSection && currentSection._isExamBatch && examMode === 'taking') {
+    const answered = Object.keys(examPendingAnswers).filter(k => {
+      const sel = examPendingAnswers[k];
+      return Array.isArray(sel) && sel.length > 0;
+    }).length;
+    document.getElementById('s-correct').textContent = 'Результати приховано';
+    document.getElementById('s-partial').textContent = '';
+    document.getElementById('s-wrong').textContent = '';
+    document.getElementById('s-skip').textContent = '';
+    document.getElementById('progress-info').textContent = `відповідей: ${answered} з ${total}`;
+    updateStreakDisplay();
+    updateOrderButtons();
+    return;
+  }
   sessionStats = calculateStats();
   const done = sessionStats.correct + sessionStats.partial + sessionStats.wrong + sessionStats.skip;
-  const total = currentSection.questions.length;
   document.getElementById('s-correct').textContent = `${sessionStats.correct} правильно`;
   document.getElementById('s-partial').textContent = `${sessionStats.partial} частково`;
   document.getElementById('s-wrong').textContent = `${sessionStats.wrong} неправильно`;
@@ -1081,7 +1343,9 @@ function saveProgress() {
     sectionNav,
     exam: {
       passedQuestionKeys: examData.passedQuestionKeys,
-      activeBatch: examData.activeBatch
+      activeBatch: examData.activeBatch,
+      pendingAnswers: examPendingAnswers,
+      mode: examMode
     }
   };
   try {
@@ -1136,9 +1400,11 @@ function migrateToLatest(parsed) {
     exam: parsed.exam && typeof parsed.exam === 'object'
       ? {
           passedQuestionKeys: Array.isArray(parsed.exam.passedQuestionKeys) ? parsed.exam.passedQuestionKeys : [],
-          activeBatch: parsed.exam.activeBatch || null
+          activeBatch: parsed.exam.activeBatch || null,
+          pendingAnswers: parsed.exam.pendingAnswers && typeof parsed.exam.pendingAnswers === 'object' ? parsed.exam.pendingAnswers : {},
+          mode: parsed.exam.mode === 'review' ? 'review' : 'taking'
         }
-      : { passedQuestionKeys: [], activeBatch: null }
+      : { passedQuestionKeys: [], activeBatch: null, pendingAnswers: {}, mode: 'taking' }
   };
 }
 
@@ -1159,6 +1425,10 @@ function restoreProgressOrDefault() {
         activeBatch: saved.exam.activeBatch || null
       }
     : { passedQuestionKeys: [], activeBatch: null };
+  examPendingAnswers = saved.exam && saved.exam.pendingAnswers && typeof saved.exam.pendingAnswers === 'object'
+    ? saved.exam.pendingAnswers
+    : {};
+  examMode = saved.exam && saved.exam.mode === 'review' ? 'review' : 'taking';
   buildSidebar(); // rebuild now that answerState is loaded so progress bars show correctly
   sessionStats = saved.sessionStats && typeof saved.sessionStats === 'object'
     ? {
@@ -1336,11 +1606,20 @@ function updateNextButtonVisibility() {
   const btnSkip = document.getElementById('s-skip-btn');
   const queueLen = questionOrder.length;
   const q = currentSection.questions[questionOrder[currentIndex]];
+  const isLast = currentIndex >= queueLen - 1;
+
+  // Exam-taking: blind test UX — always offer Next/Finish and Skip, no grading peek.
+  if (currentSection && currentSection._isExamBatch && examMode === 'taking') {
+    btnNext.style.display = 'inline-block';
+    btnNext.textContent = isLast ? 'Завершити екзамен' : 'Наступне →';
+    if (btnSkip) btnSkip.style.display = 'inline-block';
+    return;
+  }
+
   const st = q ? answerState[getQuestionKey(q)] : null;
   const isAnswered = Boolean(st && st.graded);
   btnNext.style.display = isAnswered ? 'inline-block' : 'none';
 
-  const isLast = currentIndex >= queueLen - 1;
   if (isLast) {
     btnNext.textContent = 'Завершити';
   } else if (orderMode === 'mistakes') {
