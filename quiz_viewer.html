@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Updated: Exam review now offers a focused "Пропрацювати помилки" action that shrinks the active batch to just the wrong/partial/skipped questions (resetting their pending answers) so the user can retake only the misses as another blind mini-exam. Kept prior blind mock-test flow: hidden inline grading, submission-time finishExam, review screen with mistakes + correct options, and the "Повторити цей пакет" / "Наступний пакет" / "Вийти з екзамену" actions on top of the 150-question batch engine and v4 storage. -->
+<!-- Updated: Questions bank is persisted in localStorage (quiz_questions_v1) after each successful load so the app works offline: failed fetch and file:// open both fall back to cached JSON if present. Progress still uses quiz_progress_v1 (v4). -->
 <html lang="uk">
 <head>
 <meta charset="UTF-8">
@@ -302,6 +302,7 @@
 
   <div id="usage-note">
     Оберіть відповідь → Перевірити → Наступне. Прогрес зберігається автоматично.
+    <span id="offline-hint" style="display:none;color:#b45309" title="Банк питань збережено в браузері після останнього успішного завантаження"></span>
     <span class="desktop-only" style="color:#aaa"> · Клавіатура: <span class="kbd">Enter</span> перевірити/далі · <span class="kbd">1–9</span> вибрати варіант · <span class="kbd">←→</span> навігація</span>
   </div>
 
@@ -367,22 +368,65 @@ let examData = { passedQuestionKeys: [], activeBatch: null };
 let examPendingAnswers = {}; // key (sectionTitle::id) -> [selected option indices]
 let examMode = 'taking';
 const STORAGE_KEY = 'quiz_progress_v1';
+const QUESTIONS_CACHE_KEY = 'quiz_questions_v1';
 const STORAGE_VERSION = 4;
 const EXAM_BATCH_SIZE = 150;
 
 // Try loading JSON from same directory; if blocked on file://, fallback to manual picker.
 loadQuestions();
 
+function getCachedQuestions() {
+  try {
+    const raw = localStorage.getItem(QUESTIONS_CACHE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveQuestionCache(data) {
+  if (!Array.isArray(data) || !data.length) return;
+  try {
+    localStorage.setItem(QUESTIONS_CACHE_KEY, JSON.stringify(data));
+  } catch (_) {
+    // Quota or private mode — app still works from memory.
+  }
+}
+
+function showOfflineHint(visible) {
+  const el = document.getElementById('offline-hint');
+  if (!el) return;
+  if (visible) {
+    el.style.display = 'inline';
+    el.textContent = ' · Питання з локального кешу (без мережі).';
+  } else {
+    el.style.display = 'none';
+    el.textContent = '';
+  }
+}
+
+/** Returns true if cached bank was applied (offline / fallback). */
+function tryLoadFromCache() {
+  const data = getCachedQuestions();
+  if (!data) return false;
+  applyLoadedData(data);
+  showOfflineHint(true);
+  return true;
+}
+
 async function loadQuestions() {
   const mainError = document.getElementById('q-list');
   const help = document.getElementById('loader-help');
   if (location.protocol === 'file:') {
+    if (tryLoadFromCache()) return;
     mainError.innerHTML = '<p style="color:#b45309;padding:1rem">Режим file://: автозавантаження JSON через fetch вимкнено браузером.</p>';
     help.innerHTML =
-      'Ви відкрили файл локально (<code>file://</code>), тому <code>fetch("questions.json")</code> заблоковано CORS-політикою. ' +
-      'Оберіть JSON вручну нижче або запустіть локальний сервер: ' +
-      '<code>python3 -m http.server 8000</code> і відкрийте ' +
-      '<code>http://localhost:8000/quiz_viewer.html</code>.';
+      'Спершу відкрийте сторінку через локальний сервер один раз і дочекайтесь завантаження, або імпортуйте <code>questions.json</code> вручну — питання збережуться в localStorage, і наступні рази <strong>кеш працюватиме офлайн</strong> навіть з <code>file://</code>. ' +
+      'Альтернатива зараз: <code>python3 -m http.server 8000</code> → ' +
+      '<code>http://localhost:8000/quiz_viewer.html</code> або вибір файлу нижче.';
     document.getElementById('loader-panel').style.display = 'block';
     return;
   }
@@ -390,20 +434,14 @@ async function loadQuestions() {
     const res = await fetch('questions.json', { cache: 'no-store' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    showOfflineHint(false);
     applyLoadedData(data);
   } catch (err) {
+    if (tryLoadFromCache()) return;
     const reason = err && err.message ? err.message : 'unknown error';
     mainError.innerHTML = `<p style="color:#dc2626;padding:1rem">Помилка автозавантаження questions.json: ${escHtml(reason)}.</p>`;
-    if (location.protocol === 'file:') {
-      help.innerHTML =
-        'Браузер блокує читання JSON у режимі <code>file://</code>. ' +
-        'Надійний варіант: запустіть локальний сервер у цій папці командою ' +
-        '<code>python3 -m http.server 8000</code> і відкрийте ' +
-        '<code>http://localhost:8000/quiz_viewer.html</code>. ' +
-        'Або завантажте JSON вручну нижче.';
-    } else {
-      help.innerHTML = 'Не вдалося автоматично завантажити <code>questions.json</code>. Оберіть файл вручну або спробуйте ще раз.';
-    }
+    help.innerHTML =
+      'Немає збереженого кешу питань. Під час наступного онлайн-відкриття банк збережеться в браузері. Зараз: оберіть <code>questions.json</code> вручну або спробуйте ще раз, коли мережа з’явиться.';
     document.getElementById('loader-panel').style.display = 'block';
   }
 }
@@ -420,6 +458,7 @@ function loadFromPickedFile() {
   reader.onload = () => {
     try {
       const data = JSON.parse(String(reader.result || ''));
+      showOfflineHint(false);
       applyLoadedData(data);
       document.getElementById('loader-panel').style.display = 'none';
     } catch (e) {
@@ -437,6 +476,7 @@ function applyLoadedData(data) {
     throw new Error('JSON has invalid structure');
   }
   allData = data;
+  saveQuestionCache(data);
   document.body.classList.add('focus-test');
   buildSidebar();
   restoreProgressOrDefault();
